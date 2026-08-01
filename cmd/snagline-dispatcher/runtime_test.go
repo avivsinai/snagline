@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseDispatcherRuntimeConfigRequiresSecureOneShotInputs(t *testing.T) {
 	setValidDispatcherEnvironment(t)
-	config, err := parseDispatcherRuntimeConfig([]string{"--case-id", "case-1", "--case-commitment", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--text", "inert"})
+	config, err := parseDispatcherRuntimeConfig([]string{"--case-id", "case-1", "--case-commitment", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--text", "confidential inert detail", "--public-summary", "inert"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -15,7 +15,7 @@ func TestParseDispatcherRuntimeConfigRequiresSecureOneShotInputs(t *testing.T) {
 
 func TestParseDispatcherRuntimeConfigRejectsPlaintextControlEndpoint(t *testing.T) {
 	setValidDispatcherEnvironment(t)
-	if _, err := parseDispatcherRuntimeConfig([]string{"--case-id", "case-1", "--case-commitment", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--text", "inert", "--control-url", "http://control.example"}); err == nil {
+	if _, err := parseDispatcherRuntimeConfig([]string{"--case-id", "case-1", "--case-commitment", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--text", "confidential inert detail", "--public-summary", "inert", "--control-url", "http://control.example"}); err == nil {
 		t.Fatal("accepted plaintext control endpoint")
 	}
 }

@@ -70,6 +70,11 @@ archives:
     name_template: "snagline_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - THIRD_PARTY_NOTICES.md
+      - LICENSES/Apache-2.0.txt
   - id: edge-commands
     ids:
       - snagline-edge
@@ -77,6 +82,11 @@ archives:
     name_template: "snagline_edge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - THIRD_PARTY_NOTICES.md
+      - LICENSES/Apache-2.0.txt
 
 checksum:
   name_template: checksums.txt

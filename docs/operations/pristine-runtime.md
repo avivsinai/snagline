@@ -50,6 +50,10 @@ Provisioning is performed by platform/DB/PKI owners:
 5. Provision the external stock Buzz deployment according to
    [the stock-Buzz deployment gate](../stock-buzz-deployment.md). It remains
    unmodified and receives no PostgreSQL, NATS, edge, or control credential.
+   Put its HTTP bridge behind the approved TLS 1.3 proxy. The production
+   DigiCert wildcard certificate is validated with system WebPKI roots, so
+   omit `buzz_tls_ca_file`; an absolute, securely loaded extra CA file remains
+   available only for deployments that explicitly require one.
 
 Edge and dispatcher projection files use the pinned SQLCipher 4.14.0 community
 driver with OpenSSL. The supplied 32-byte root key is separated by HKDF into a
@@ -215,11 +219,12 @@ new key.
 5. **NATS credential:** provision a new scoped credential, overlap only long
    enough to verify TLS connection and bounded delivery, then revoke the old
    credential. PostgreSQL remains authoritative throughout an outage.
-6. **Buzz identity:** create a distinct replacement Nostr key, add it to every
-   required private agent-only channel and ACP allowlist, update the external
-   dispatcher policy/attestation if relevant, run the stock live gate against
-   the immutable image digest, then remove the old key. Never reuse a Buzz key
-   as an SSP, TLS, PostgreSQL, or NATS identity.
+6. **Buzz identity:** create a distinct replacement Nostr key and have the
+   declared human operator issue a new file-backed NIP-OA auth tag. Update the
+   official open-channel projector/ACP allowlists and the external dispatcher
+   policy/attestation if relevant, run the stock live gate against the
+   immutable image digest, then revoke/remove the old agent credential. Never
+   reuse a Buzz key as an SSP, TLS, PostgreSQL, or NATS identity.
 
 ## Incident boundaries
 

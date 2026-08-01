@@ -32,6 +32,34 @@ func TestParseConfigRequiresExplicitSecureRuntimeInputs(t *testing.T) {
 	if config.postgresPoolConfig == nil {
 		t.Fatal("runtime configuration did not retain its validated PostgreSQL connection plan")
 	}
+	if config.SingleNodeTestStream {
+		t.Fatal("production default silently selected the single-node test stream")
+	}
+}
+
+func TestParseConfigRequiresExactExplicitSingleNodeTestStreamOptIn(t *testing.T) {
+	t.Setenv("SNAGLINE_DELIVERY_POSTGRES_DSN", testDeliveryPostgresDSN)
+	t.Setenv("SNAGLINE_DELIVERY_AUTHORITY_ID", "authority-1")
+	t.Setenv("SNAGLINE_DELIVERY_WORKER_ID", "worker-1")
+	t.Setenv("SNAGLINE_DELIVERY_NATS_URL", "tls://nats.example:4222")
+	t.Setenv("SNAGLINE_DELIVERY_NATS_CREDENTIALS_FILE", "/run/secrets/nats.creds")
+	t.Setenv("SNAGLINE_DELIVERY_NATS_CA_FILE", "/run/secrets/nats-ca.pem")
+	t.Setenv("SNAGLINE_DELIVERY_OPS_SOCKET", "/run/snagline/delivery.ops.sock")
+	t.Setenv("SNAGLINE_DELIVERY_SINGLE_NODE_TEST_STREAM", "true")
+
+	config, err := parseConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.SingleNodeTestStream {
+		t.Fatal("explicit single-node test stream opt-in was ignored")
+	}
+	for _, invalid := range []string{"1", "TRUE", "yes", " true "} {
+		t.Setenv("SNAGLINE_DELIVERY_SINGLE_NODE_TEST_STREAM", invalid)
+		if _, err := parseConfig(nil); err == nil {
+			t.Fatalf("accepted ambiguous single-node test stream value %q", invalid)
+		}
+	}
 }
 
 func TestParseConfigRequiresAbsoluteOpsSocket(t *testing.T) {

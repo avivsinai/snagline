@@ -20,12 +20,13 @@
     "body": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["domain", "issuer_edge_id", "issuer_edge_generation", "summary", "context_manifest"],
+      "required": ["domain", "issuer_edge_id", "issuer_edge_generation", "summary", "public_summary", "context_manifest"],
       "properties": {
         "domain": {"$ref": "#/$defs/opaqueID"},
         "issuer_edge_id": {"$ref": "#/$defs/opaqueID"},
         "issuer_edge_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "public_summary": {"type": "string", "minLength": 1, "maxLength": 1024},
         "context_manifest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "minLength": 71, "maxLength": 71}
       }
     }

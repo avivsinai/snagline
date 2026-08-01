@@ -66,6 +66,153 @@ func TestWrongGenerationHaltsIntoReconciliation(t *testing.T) {
 	}
 }
 
+func TestConflictingRecordedDeliveryHaltsVisiblyWithoutRetryLoop(t *testing.T) {
+	db := newTestDB(t)
+	id := testIdentity()
+	now := time.Now().UTC()
+	c, _ := NewJournalConsumer(db, verifyFunc(func(context.Context, JournalDelivery) (*VerifiedProjection, error) {
+		return caseProjection(now, id, "domain/a.*", "case"), nil
+	}), id, nil)
+	first := fakeCarrier(id, 1, "case-original-bytes", edgeDeliverySubject(id))
+	if got, err := c.Process(context.Background(), first, now); err != nil || got != ProcessAccepted {
+		t.Fatalf("first=(%q,%v)", got, err)
+	}
+	conflict := fakeCarrier(id, 1, "case-conflicting-bytes", edgeDeliverySubject(id))
+	got, err := c.Process(context.Background(), conflict, now)
+	if err != nil || got != ProcessOutcome("identity_conflict") {
+		t.Fatalf("conflict=(%q,%v), want durable identity_conflict outcome", got, err)
+	}
+	if conflict.acks != 1 || conflict.naks != 0 {
+		t.Fatalf("conflict ack/nak=%d/%d, want ACK without a redelivery loop", conflict.acks, conflict.naks)
+	}
+	if !c.Halted() {
+		t.Fatal("consumer did not halt on an authoritative delivery identity conflict")
+	}
+	state, err := db.DeliveryState(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != DeliveryModeReconciliationRequired || state.Reason != "delivery_identity_conflict" {
+		t.Fatalf("state=%+v, want persisted visible identity-conflict halt", state)
+	}
+	restarted, err := NewJournalConsumer(db, verifyFunc(func(context.Context, JournalDelivery) (*VerifiedProjection, error) {
+		return nil, errors.New("unexpected verification")
+	}), id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Halted() {
+		t.Fatal("restart forgot the persisted identity-conflict halt")
+	}
+}
+
+func TestConflictingRecordedNextDeliveryBytesHaltVisibly(t *testing.T) {
+	db := newTestDB(t)
+	id := testIdentity()
+	now := time.Now().UTC()
+	c, _ := NewJournalConsumer(db, verifyFunc(func(context.Context, JournalDelivery) (*VerifiedProjection, error) {
+		return caseProjection(now, id, "domain/a.*", "case"), nil
+	}), id, nil)
+	first := fakeCarrier(id, 1, "case-original-bytes", edgeDeliverySubject(id))
+	if got, err := c.Process(context.Background(), first, now); err != nil || got != ProcessAccepted {
+		t.Fatalf("first=(%q,%v)", got, err)
+	}
+	// Simulate a torn historical state where the delivery row exists but the
+	// contiguous state was not advanced, so the recorded row is re-examined as
+	// the next expected sequence.
+	tearContiguousState(t, db, id)
+	outcome, err := db.ApplyVerified(context.Background(), JournalDelivery{
+		Stream: deliverystream.StreamName, Sequence: 21, DeliverySeq: 1,
+		TenantID: id.TenantID, EdgeID: id.EdgeID, EdgeGeneration: id.Generation,
+		Subject: edgeDeliverySubject(id), Raw: []byte("case-conflicting-bytes"),
+	}, VerdictAccepted, "", caseProjection(now, id, "domain/a.*", "case"), now)
+	if err != nil || outcome != ApplyOutcome("identity_conflict") {
+		t.Fatalf("apply=(%q,%v), want identity_conflict outcome", outcome, err)
+	}
+	state, err := db.DeliveryState(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != DeliveryModeReconciliationRequired || state.Reason != "delivery_identity_conflict" {
+		t.Fatalf("state=%+v, want persisted visible identity-conflict halt", state)
+	}
+}
+
+func TestConflictingRecordedNextDeliverySubjectHaltsVisibly(t *testing.T) {
+	db := newTestDB(t)
+	id := testIdentity()
+	now := time.Now().UTC()
+	c, _ := NewJournalConsumer(db, verifyFunc(func(context.Context, JournalDelivery) (*VerifiedProjection, error) {
+		return caseProjection(now, id, "domain/a.*", "case"), nil
+	}), id, nil)
+	first := fakeCarrier(id, 1, "case-original-bytes", edgeDeliverySubject(id))
+	if got, err := c.Process(context.Background(), first, now); err != nil || got != ProcessAccepted {
+		t.Fatalf("first=(%q,%v)", got, err)
+	}
+	tearContiguousState(t, db, id)
+	outcome, err := db.ApplyVerified(context.Background(), JournalDelivery{
+		Stream: deliverystream.StreamName, Sequence: 21, DeliverySeq: 1,
+		TenantID: id.TenantID, EdgeID: id.EdgeID, EdgeGeneration: id.Generation,
+		Subject: "different-subject", Raw: []byte("case-original-bytes"),
+	}, VerdictAccepted, "", caseProjection(now, id, "domain/a.*", "case"), now)
+	if err != nil || outcome != ApplyIdentityConflict {
+		t.Fatalf("same-bytes/different-subject apply=(%q,%v), want ApplyIdentityConflict", outcome, err)
+	}
+	state, err := db.DeliveryState(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != DeliveryModeReconciliationRequired || state.Reason != "delivery_identity_conflict" {
+		t.Fatalf("state=%+v, want persisted visible identity-conflict halt", state)
+	}
+}
+
+func TestReconcileRepairsRecordedNextDeliveryAndResumes(t *testing.T) {
+	db := newTestDB(t)
+	id := testIdentity()
+	now := time.Now().UTC()
+	original := fakeCarrier(id, 1, "case-original-bytes", edgeDeliverySubject(id))
+	reconciler := &fakeReconciler{batch: ReconcileBatch{
+		Deliveries: []JournalDelivery{{
+			DeliverySeq: 1, TenantID: id.TenantID, EdgeID: id.EdgeID, EdgeGeneration: id.Generation,
+			Subject: edgeDeliverySubject(id), Raw: []byte("case-original-bytes"),
+		}},
+		HighWatermark: 1, CompleteThrough: 1,
+	}}
+	c, _ := NewJournalConsumer(db, verifyFunc(func(context.Context, JournalDelivery) (*VerifiedProjection, error) {
+		return caseProjection(now, id, "domain/a.*", "case"), nil
+	}), id, reconciler)
+	if got, err := c.Process(context.Background(), original, now); err != nil || got != ProcessAccepted {
+		t.Fatalf("first=(%q,%v)", got, err)
+	}
+	// Tear the contiguous state, then halt through a real conflicting live
+	// delivery at the recorded next sequence.
+	tearContiguousState(t, db, id)
+	conflict := fakeCarrier(id, 1, "case-conflicting-bytes", edgeDeliverySubject(id))
+	if got, err := c.Process(context.Background(), conflict, now); err != nil || got != ProcessIdentityConflict || !c.Halted() {
+		t.Fatalf("conflict=(%q,%v) halted=%v", got, err, c.Halted())
+	}
+	// Authority reconciliation replays the exact recorded delivery; the edge
+	// must advance through it and resume without reapplying the projection.
+	result, err := c.Reconcile(context.Background(), now)
+	if err != nil {
+		t.Fatalf("reconcile after identity conflict: %v", err)
+	}
+	if !result.Resumed || c.Halted() {
+		t.Fatalf("reconcile=%+v halted=%v, want resumed", result, c.Halted())
+	}
+	state, err := db.DeliveryState(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LastContiguousSeq != 1 || state.Mode != DeliveryModeActive {
+		t.Fatalf("state=%+v, want repaired active state through seq 1", state)
+	}
+	if count(t, db, "ssp_edge_cases") != 1 {
+		t.Fatal("reconciliation reapplied or dropped the recorded projection")
+	}
+}
+
 func TestConsumerRestoresPersistedReconciliationHalt(t *testing.T) {
 	db := newTestDB(t)
 	id := testIdentity()
@@ -238,6 +385,15 @@ func (m *fakeMessage) DoubleAck(context.Context) error    { m.acks++; return m.a
 func (m *fakeMessage) Nak() error                         { m.naks++; return nil }
 func fakeCarrier(id EdgeIdentity, seq int64, raw, subject string) *fakeMessage {
 	return &fakeMessage{meta: JournalMetadata{Stream: deliverystream.StreamName, Sequence: uint64(seq + 20), DeliverySeq: seq, TenantID: id.TenantID, EdgeID: id.EdgeID, EdgeGeneration: id.Generation}, subject: subject, data: []byte(raw)}
+}
+
+// tearContiguousState simulates a torn historical commit by rewinding the
+// contiguous counter beneath an already-recorded delivery row.
+func tearContiguousState(t *testing.T, db *DB, id EdgeIdentity) {
+	t.Helper()
+	if _, err := db.sqlDB.Exec(`UPDATE ssp_edge_delivery_state SET last_contiguous_seq=0 WHERE tenant_id=? AND edge_id=? AND edge_generation=?`, id.TenantID, id.EdgeID, id.Generation); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type fakeReconciler struct {

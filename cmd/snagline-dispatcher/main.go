@@ -49,7 +49,8 @@ func run(args []string, factory func(keyDescriptor) (dispatcherAPI, error), stdo
 	caseID := flags.String("case-id", "", "case ID")
 	caseCommitment := flags.String("case-commitment", "", "exact committed case commitment")
 	text := flags.String("text", "", "inert advice text")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || !filepath.IsAbs(*descriptorPath) || *caseID == "" || *caseCommitment == "" || *text == "" {
+	publicSummary := flags.String("public-summary", "", "explicit public advice summary")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || !filepath.IsAbs(*descriptorPath) || *caseID == "" || *caseCommitment == "" || *text == "" || *publicSummary == "" {
 		return writeResult(stdout, commandResult{OK: false, Code: "invalid_arguments"})
 	}
 	descriptor, err := readKeyDescriptor(*descriptorPath)
@@ -60,7 +61,7 @@ func run(args []string, factory func(keyDescriptor) (dispatcherAPI, error), stdo
 	if err != nil || service == nil {
 		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
 	}
-	result, err := service.FinalizeAdvice(context.Background(), edge.FinalizeAdviceRequest{CaseID: *caseID, CaseCommitment: *caseCommitment, Text: *text})
+	result, err := service.FinalizeAdvice(context.Background(), edge.FinalizeAdviceRequest{CaseID: *caseID, CaseCommitment: *caseCommitment, Text: *text, PublicSummary: *publicSummary})
 	if err != nil || !result.AcceptedRemote {
 		return writeResult(stdout, commandResult{OK: false, Code: "advice_not_accepted"})
 	}

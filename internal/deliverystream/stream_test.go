@@ -15,7 +15,10 @@ import (
 )
 
 func TestStreamIsBoundedFileR3DeliveryAcceleration(t *testing.T) {
-	config := StreamConfig()
+	config, err := StreamConfig(StreamModeProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if config.Name != StreamName || config.Storage != jetstream.FileStorage || config.Replicas != ProductionReplicas {
 		t.Fatalf("stream config = %#v", config)
 	}
@@ -24,6 +27,32 @@ func TestStreamIsBoundedFileR3DeliveryAcceleration(t *testing.T) {
 	}
 	if want := []string{SubjectPrefix + ".>"}; !sameStrings(config.Subjects, want) {
 		t.Fatalf("subjects = %v, want %v", config.Subjects, want)
+	}
+}
+
+func TestSingleNodeTestStreamModeIsExplicitAndBounded(t *testing.T) {
+	config, err := StreamConfig(StreamModeSingleNodeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Replicas != 1 {
+		t.Fatalf("single-node test replicas = %d, want 1", config.Replicas)
+	}
+	if _, err := StreamConfig(StreamMode("caller-selected")); err == nil {
+		t.Fatal("accepted an unknown stream durability mode")
+	}
+
+	js := newTestJetStream(t)
+	ctx := testContext(t)
+	if err := EnsureStream(ctx, js, StreamModeSingleNodeTest); err != nil {
+		t.Fatalf("ensure single-node test stream: %v", err)
+	}
+	info, err := mustStream(t, ctx, js).Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Config.Replicas != 1 {
+		t.Fatalf("created stream replicas = %d, want 1", info.Config.Replicas)
 	}
 }
 
@@ -199,9 +228,11 @@ func newTestJetStream(t *testing.T) jetstream.JetStream {
 
 func createTestStream(t *testing.T, ctx context.Context, js jetstream.JetStream) {
 	t.Helper()
-	config := StreamConfig()
+	config, err := StreamConfig(StreamModeSingleNodeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	config.Storage = jetstream.MemoryStorage
-	config.Replicas = 1 // The embedded test server is intentionally single-node.
 	if _, err := js.CreateStream(ctx, config); err != nil {
 		t.Fatalf("create test stream: %v", err)
 	}

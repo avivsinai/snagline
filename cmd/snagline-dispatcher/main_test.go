@@ -15,7 +15,7 @@ func TestRunRefusesRuntimeUnavailableWithoutClaimingAdviceAccepted(t *testing.T)
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	code := run([]string{"--key-descriptor", descriptor, "--case-id", "case-1", "--case-commitment", "sha256:" + repeat("a", 64), "--text", "inert"}, func(keyDescriptor) (dispatcherAPI, error) { return nil, errors.New("not wired") }, &out)
+	code := run([]string{"--key-descriptor", descriptor, "--case-id", "case-1", "--case-commitment", "sha256:" + repeat("a", 64), "--text", "confidential inert detail", "--public-summary", "inert"}, func(keyDescriptor) (dispatcherAPI, error) { return nil, errors.New("not wired") }, &out)
 	if code == 0 || bytes.Contains(out.Bytes(), []byte("inert")) {
 		t.Fatalf("code=%d output=%s", code, out.String())
 	}

@@ -77,6 +77,12 @@ jobs:
           tar -tzf "$portable_archive" | grep -qx 'snagline-front'
           tar -tzf "$portable_archive" | grep -qx 'snagline-buzz-projector'
           tar -tzf "$portable_archive" | grep -qx 'snagline-ssp-verify'
+          for archive in "$edge_archive" "$portable_archive"; do
+            tar -tzf "$archive" | grep -qx 'LICENSE'
+            tar -tzf "$archive" | grep -qx 'README.md'
+            tar -tzf "$archive" | grep -qx 'THIRD_PARTY_NOTICES.md'
+            tar -tzf "$archive" | grep -qx 'LICENSES/Apache-2.0.txt'
+          done
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
           mkdir "$scratch/edge" "$scratch/portable"

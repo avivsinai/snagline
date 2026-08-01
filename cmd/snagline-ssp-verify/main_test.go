@@ -168,7 +168,7 @@ func signedCaseEnvelope(t *testing.T) ([]byte, string) {
 		RegistryHash:     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		AuthorKeyID:      "key_1",
 		SignatureAlg:     "ed25519",
-		Body:             []byte(`{"domain":"runtime","issuer_edge_id":"edge_1","issuer_edge_generation":1,"summary":"test case","context_manifest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}`),
+		Body:             []byte(`{"domain":"runtime","issuer_edge_id":"edge_1","issuer_edge_generation":1,"summary":"confidential test case","public_summary":"test case","context_manifest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}`),
 	}, signingKey, verifyAt)
 	if err != nil {
 		t.Fatal(err)

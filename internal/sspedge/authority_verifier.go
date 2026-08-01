@@ -58,12 +58,14 @@ type verifiedCaseBody struct {
 	IssuerEdgeID         string `json:"issuer_edge_id"`
 	IssuerEdgeGeneration int64  `json:"issuer_edge_generation"`
 	Summary              string `json:"summary"`
+	PublicSummary        string `json:"public_summary"`
 	ContextManifest      string `json:"context_manifest"`
 }
 
 type verifiedAdviceBody struct {
 	CaseCommitment string `json:"case_commitment"`
 	Text           string `json:"text"`
+	PublicSummary  string `json:"public_summary"`
 }
 
 func (v *AuthorityVerifier) Verify(ctx context.Context, delivery JournalDelivery) (*VerifiedProjection, error) {

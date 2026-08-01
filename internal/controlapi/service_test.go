@@ -80,6 +80,41 @@ func TestSubmitAdviceUsesCommittedCaseFactAndPassesExactBinding(t *testing.T) {
 	}
 }
 
+func TestSubmitAdviceRejectsAdviceForExpiredCommittedCase(t *testing.T) {
+	fixture := newControlFixture(t)
+	signedAt := controlNow.Add(-30 * time.Minute)
+	expiredRaw := fixture.caseRawAt(t, "case-expired", "case-envelope-expired", signedAt, signedAt, controlNow.Add(-time.Minute))
+	expiredCommitment, err := ssp.EnvelopeCommitment(expiredRaw, signedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveRaw := fixture.caseRaw(t, "case-live", "case-envelope-live")
+	liveCommitment, err := ssp.EnvelopeCommitment(liveRaw, controlNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.authority.facts = []authority.ProjectionFact{
+		{AuthorityRevision: 1, Kind: "case", CaseID: "case-expired", EnvelopeID: "case-envelope-expired", Commitment: expiredCommitment, Raw: expiredRaw},
+		{AuthorityRevision: 2, Kind: "case", CaseID: "case-live", EnvelopeID: "case-envelope-live", Commitment: liveCommitment, Raw: liveRaw},
+	}
+
+	expiredAdvice := fixture.adviceRaw(t, "case-expired", "advice-envelope-expired", expiredCommitment)
+	if _, err := fixture.service.Submit(context.Background(), WorkloadIdentity{PrincipalID: "dispatcher-principal"}, expiredAdvice); !errors.Is(err, ErrExpiredInput) {
+		t.Fatalf("Submit advice for expired case error = %v, want ErrExpiredInput", err)
+	}
+	if fixture.authority.adviceCalls != 0 {
+		t.Fatalf("expired case reached CommitAdvice: calls = %d, want 0", fixture.authority.adviceCalls)
+	}
+
+	liveAdvice := fixture.adviceRaw(t, "case-live", "advice-envelope-live", liveCommitment)
+	if _, err := fixture.service.Submit(context.Background(), WorkloadIdentity{PrincipalID: "dispatcher-principal"}, liveAdvice); err != nil {
+		t.Fatalf("Submit advice for live case: %v", err)
+	}
+	if fixture.authority.adviceCalls != 1 {
+		t.Fatalf("live case CommitAdvice calls = %d, want 1", fixture.authority.adviceCalls)
+	}
+}
+
 func TestSubmitRegistryRequiresPublisherAndPreservesExactRaw(t *testing.T) {
 	fixture := newControlFixture(t)
 	if _, err := fixture.service.SubmitRegistry(context.Background(), WorkloadIdentity{PrincipalID: "registry-publisher", EdgeID: "edge-1", EdgeGeneration: 1}, fixture.authority.registry.Raw); !errors.Is(err, ErrUnauthorized) {
@@ -326,13 +361,22 @@ func (f controlFixture) registryRaw(t *testing.T, revision int64, envelopeID, pr
 
 func (f controlFixture) caseRaw(t *testing.T, caseID, envelopeID string) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","context_manifest":"` + digest("manifest") + `"}`)
-	return sign(t, ssp.Envelope{Schema: ssp.FamilyCase, ID: envelopeID, CaseID: caseID, EmittedAt: controlNow.Format(time.RFC3339), ExpiresAt: controlNow.Add(time.Hour).Format(time.RFC3339), RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: f.authority.registry.Commitment, AuthorKeyID: "edge-key", SignatureAlg: "ed25519", Body: body}, f.edgeKey)
+	return f.caseRawAt(t, caseID, envelopeID, controlNow, controlNow, controlNow.Add(time.Hour))
+}
+
+func (f controlFixture) caseRawAt(t *testing.T, caseID, envelopeID string, signedAt, emittedAt, expiresAt time.Time) []byte {
+	t.Helper()
+	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"` + digest("manifest") + `"}`)
+	raw, err := ssp.Sign(ssp.Envelope{Schema: ssp.FamilyCase, ID: envelopeID, CaseID: caseID, EmittedAt: emittedAt.Format(time.RFC3339), ExpiresAt: expiresAt.Format(time.RFC3339), RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: f.authority.registry.Commitment, AuthorKeyID: "edge-key", SignatureAlg: "ed25519", Body: body}, f.edgeKey, signedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func (f controlFixture) adviceRaw(t *testing.T, caseID, envelopeID, caseCommitment string) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"bounded advice"}`)
+	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"confidential advice detail","public_summary":"bounded advice"}`)
 	return sign(t, ssp.Envelope{Schema: ssp.FamilyAdvice, ID: envelopeID, CaseID: caseID, EmittedAt: controlNow.Format(time.RFC3339), ExpiresAt: controlNow.Add(time.Hour).Format(time.RFC3339), RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: f.authority.registry.Commitment, AuthorKeyID: "advice-key", SignatureAlg: "ed25519", Body: body}, f.adviceKey)
 }
 

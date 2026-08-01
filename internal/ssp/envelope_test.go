@@ -70,7 +70,7 @@ func TestSignVerifyAndSignedMutation(t *testing.T) {
 		EmittedAt: "2030-01-01T00:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z",
 		RoutingEpoch: 1, RegistryRevision: 2, RegistryHash: "sha256:" + strings.Repeat("a", 64),
 		AuthorKeyID: "key-1", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
+		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
 	}
 	raw, err := Sign(envelope, signing, now)
 	if err != nil {
@@ -91,15 +91,15 @@ func TestSignVerifyAndSignedMutation(t *testing.T) {
 
 func TestValidateRejectsBodyContractViolations(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	base := Envelope{Schema: "ssp.advice.v1", ID: "a", CaseID: "c", EmittedAt: "2030-01-01T00:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z", RegistryHash: "sha256:" + strings.Repeat("a", 64), AuthorKeyID: "k", SignatureAlg: "ed25519", Body: json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":"t"}`)}
+	base := Envelope{Schema: "ssp.advice.v1", ID: "a", CaseID: "c", EmittedAt: "2030-01-01T00:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z", RegistryHash: "sha256:" + strings.Repeat("a", 64), AuthorKeyID: "k", SignatureAlg: "ed25519", Body: json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":"confidential t","public_summary":"t"}`)}
 	if err := base.Validate(now); err != nil {
 		t.Fatalf("valid advice: %v", err)
 	}
-	base.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":"t","unknown":true}`)
+	base.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":"confidential t","public_summary":"t","unknown":true}`)
 	if err := base.Validate(now); err == nil {
 		t.Fatal("accepted unknown body field")
 	}
-	base.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":1.5}`)
+	base.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("b", 64) + `","text":1.5,"public_summary":"t"}`)
 	if err := base.Validate(now); err == nil {
 		t.Fatal("accepted floating point body value")
 	}
@@ -111,7 +111,7 @@ func TestValidateMatchesSchemaBoundaries(t *testing.T) {
 		Schema: "ssp.case.v1", ID: "id", CaseID: "case",
 		EmittedAt: "2030-01-01T00:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z",
 		RegistryHash: "sha256:" + strings.Repeat("a", 64), AuthorKeyID: "key", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
+		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"confidential summary","public_summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
 	}
 	if err := base.Validate(now); err != nil {
 		t.Fatalf("valid envelope: %v", err)
@@ -121,10 +121,10 @@ func TestValidateMatchesSchemaBoundaries(t *testing.T) {
 		"case_id":       func(e *Envelope) { e.CaseID = strings.Repeat("c", 513) },
 		"author_key_id": func(e *Envelope) { e.AuthorKeyID = strings.Repeat("k", 513) },
 		"issuer_edge_id": func(e *Envelope) {
-			e.Body = json.RawMessage(`{"domain":"runtime","issuer_edge_id":"` + strings.Repeat("e", 513) + `","summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
+			e.Body = json.RawMessage(`{"domain":"runtime","issuer_edge_id":"` + strings.Repeat("e", 513) + `","issuer_edge_generation":1,"summary":"confidential summary","public_summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
 		},
 		"domain": func(e *Envelope) {
-			e.Body = json.RawMessage(`{"domain":"` + strings.Repeat("d", 513) + `","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
+			e.Body = json.RawMessage(`{"domain":"` + strings.Repeat("d", 513) + `","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"confidential summary","public_summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestValidateEnforcesTrustedEmissionBoundary(t *testing.T) {
 		Schema: "ssp.case.v1", ID: "id", CaseID: "case",
 		EmittedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339),
 		RegistryHash: "sha256:" + strings.Repeat("a", 64), AuthorKeyID: "key", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
+		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"confidential summary","public_summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
 	}
 	if err := base.Validate(now); err != nil {
 		t.Fatalf("emitted_at boundary: %v", err)
@@ -160,7 +160,7 @@ func TestValidateRejectsNonSSPUTCTimestamps(t *testing.T) {
 		Schema: "ssp.case.v1", ID: "id", CaseID: "case",
 		EmittedAt: "2030-01-01T00:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z",
 		RegistryHash: "sha256:" + strings.Repeat("a", 64), AuthorKeyID: "key", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
+		Body: json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge","issuer_edge_generation":1,"summary":"confidential summary","public_summary":"summary","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`),
 	}
 	for name, timestamp := range map[string]string{
 		"offset":       "2030-01-01T00:00:00+00:00",

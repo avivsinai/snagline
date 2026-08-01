@@ -680,7 +680,7 @@ func validateCaseAdviceBody(schema string, raw []byte) error {
 	}
 	switch schema {
 	case FamilyCase:
-		required := []string{"domain", "issuer_edge_id", "issuer_edge_generation", "summary", "context_manifest"}
+		required := []string{"domain", "issuer_edge_id", "issuer_edge_generation", "summary", "public_summary", "context_manifest"}
 		if err := requireExactMembers(members, memberSet(required), required, schema+" body"); err != nil {
 			return err
 		}
@@ -700,16 +700,21 @@ func validateCaseAdviceBody(schema string, raw []byte) error {
 		if err != nil {
 			return err
 		}
+		publicSummary, err := requiredString(members, "public_summary", schema+" body")
+		if err != nil {
+			return err
+		}
 		contextManifest, err := requiredString(members, "context_manifest", schema+" body")
 		if err != nil {
 			return err
 		}
 		summaryLength := utf8.RuneCountInString(summary)
-		if !validOpaqueID(domain) || !validOpaqueID(issuerEdgeID) || summaryLength == 0 || summaryLength > 4096 || !sha256HexPattern.MatchString(contextManifest) {
+		publicSummaryLength := utf8.RuneCountInString(publicSummary)
+		if !validOpaqueID(domain) || !validOpaqueID(issuerEdgeID) || summaryLength == 0 || summaryLength > 4096 || publicSummaryLength == 0 || publicSummaryLength > 1024 || !sha256HexPattern.MatchString(contextManifest) {
 			return errors.New("ssp: invalid ssp.case.v1 body")
 		}
 	case FamilyAdvice:
-		required := []string{"case_commitment", "text"}
+		required := []string{"case_commitment", "text", "public_summary"}
 		if err := requireExactMembers(members, memberSet(required), required, schema+" body"); err != nil {
 			return err
 		}
@@ -721,8 +726,13 @@ func validateCaseAdviceBody(schema string, raw []byte) error {
 		if err != nil {
 			return err
 		}
+		publicSummary, err := requiredString(members, "public_summary", schema+" body")
+		if err != nil {
+			return err
+		}
 		textLength := utf8.RuneCountInString(text)
-		if !sha256HexPattern.MatchString(caseCommitment) || textLength == 0 || textLength > 8192 {
+		publicSummaryLength := utf8.RuneCountInString(publicSummary)
+		if !sha256HexPattern.MatchString(caseCommitment) || textLength == 0 || textLength > 8192 || publicSummaryLength == 0 || publicSummaryLength > 1024 {
 			return errors.New("ssp: invalid ssp.advice.v1 body")
 		}
 	default:

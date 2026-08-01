@@ -6,6 +6,7 @@
   "projection_key_file": "/run/snagline-buzz-projector/projection-sqlite.key",
   "relay_url": "https://buzz.example.invalid",
   "buzz_private_key_file": "/run/snagline-buzz-projector/projector-nostr.key",
+  "buzz_nip_oa_auth_tag_file": "/run/snagline-buzz-projector/projector-nip-oa-auth-tag.json",
   "registry_root_key_id": "REPLACE_WITH_REGISTRY_ROOT_KEY_ID",
   "registry_root_public_key_file": "/run/snagline-buzz-projector/registry-root-public.pem",
   "domain_channels": {

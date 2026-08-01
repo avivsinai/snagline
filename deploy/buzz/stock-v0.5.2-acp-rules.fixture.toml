@@ -1,0 +1,7 @@
+# Exact safe subset of block/buzz v0.5.2 buzz-acp's TomlConfig and
+# SubscriptionRule parser at commit 3e48f1b2365d326ee1c9582448d86a99b44ecd5d.
+[[rules]]
+name = "snagline-official-kind-9-mentions"
+channels = ["123e4567-e89b-42d3-a456-426614174000"]
+kinds = [9]
+require_mention = true

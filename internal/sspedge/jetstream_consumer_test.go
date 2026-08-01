@@ -17,9 +17,11 @@ func TestNewJetStreamPullConsumerEnsuresGenerationScopedExplicitAckConsumer(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	js := newEdgeTestJetStream(t)
-	config := deliverystream.StreamConfig()
+	config, err := deliverystream.StreamConfig(deliverystream.StreamModeSingleNodeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	config.Storage = jetstream.MemoryStorage
-	config.Replicas = 1
 	if _, err := js.CreateStream(ctx, config); err != nil {
 		t.Fatal(err)
 	}

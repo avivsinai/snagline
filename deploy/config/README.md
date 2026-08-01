@@ -28,6 +28,23 @@ programs reject unsafe key/credential files. The edge and projector validate
 their SQLite namespace as a private directory boundary; use a different state
 directory for every edge generation and projector installation.
 
+The Buzz projector also requires a current-service-UID-owned `0600` file whose
+entire contents are the canonical compact NIP-OA JSON tag for its Nostr key.
+It verifies the owner signature and exact JSON encoding, then sends those exact
+bytes as `x-auth-tag`; do not place the tag inline in configuration or logs.
+Stock Buzz HTTPS uses the host system WebPKI roots by default; this is the
+production path for the public DigiCert wildcard certificate. The optional
+`buzz_tls_ca_file`, when explicitly needed, must name an absolute, bounded,
+non-symlink PEM file. The projector appends that CA to the host system roots
+and requires TLS 1.3; it never replaces system trust or offers an insecure
+production escape hatch.
+
+`snagline-delivery` always provisions the fixed three-replica stream unless the
+operator explicitly sets `SNAGLINE_DELIVERY_SINGLE_NODE_TEST_STREAM=true` (or
+`--single-node-test-stream`) for a one-node test deployment. The value must be
+exactly `true` or `false`; there is no caller-selected replica count or
+automatic weakening when only one JetStream node is available.
+
 The edge and dispatcher root database-key files are exactly 32 random bytes.
 They are inputs to HKDF, not direct SQLCipher passphrases: the runtime derives
 separate SQLCipher and field-AEAD keys and never permits plaintext fallback.
@@ -44,7 +61,7 @@ artifact target and backup/rotation procedure.
 ## Provisioning, migration, and runtime are different jobs
 
 Provisioning is external to Snagline. It creates the database, TLS/NATS/Buzz
-identities, named secret references, service accounts, and directories. It
+identities, Kubernetes Secret key selectors, service accounts, and directories. It
 must not put passwords in these files. Use the organization's approved
 identity/authentication mechanism for PostgreSQL DSNs and secret-file mounts.
 No runtime role should be a PostgreSQL superuser or the schema owner; grant

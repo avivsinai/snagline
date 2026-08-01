@@ -10,7 +10,8 @@
   "author_key_id": "dispatcher-key-2026-07",
   "signature_alg": "ed25519",
   "body": {
-    "case_commitment": "sha256:45bd8e40c2a03c85e6a7f554bf99e762be4942b92a4bba88b38a9faa08784f03",
-    "text": "Inspect the approval request and explain the bounded next step."
+    "case_commitment": "sha256:5f52441b39f4f788eb0801112f884f210231f93dcdffb8fb2de8f4a59d3cc8c4",
+    "text": "Synthetic confidential advice detail for the owning edge.",
+    "public_summary": "Inspect the approval request and explain the bounded next step."
   }
 }
