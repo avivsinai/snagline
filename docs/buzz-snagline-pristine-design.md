@@ -293,6 +293,7 @@ Authenticated operations:
 POST /v1/registries
 POST /v1/cases
 POST /v1/advice
+GET  /v1/registries/{revision}?commitment=sha256:...
 GET  /v1/cases/{case_id}?commitment=sha256:...
 GET  /v1/edges/{edge_id}/generations/{generation}/deliveries?after_sequence=N&limit=M
 ```
@@ -307,11 +308,14 @@ Stable outcomes:
 - `200` acceptance or exact idempotent replay, returning the stable receipt;
 - `400` malformed or structurally invalid SSP;
 - `401/403` unauthenticated or unauthorized workload/key/route;
+- `404` unknown operation or unresolved resource;
 - `409 semantic_conflict`, `already_finalized`, registry rollback, or
   equivocation;
 - `410` expired semantic input;
+- `413` request body exceeds the exact SSP body limit;
 - `422` valid envelope with a case/registry binding mismatch;
-- `503` authority unavailable, with no acceptance claim.
+- `503` authority unavailable, with no acceptance claim;
+- `504` the authenticated control operation exceeded its deadline.
 
 The commit receipt contains stable authority ID/sequence, envelope ID, and
 commitment. It contains no broker coordinate.
@@ -337,6 +341,13 @@ automatic downgrade are accepted. Both modes retain explicit
 positive `MaxBytes`, positive `MaxAge`, `DiscardOld`, a 64 KiB SSP payload
 ceiling plus bounded headers, and explicit-ack durable consumers. Those limits
 are safe because PostgreSQL, not the stream, owns history and completeness.
+Carrier `MaxAge` is not semantic expiry. Control admission verifies the signed
+`emitted_at <= now < expires_at` interval, and advice admission also rejects a
+bound case after that case's signed expiry. Once accepted, an edge delivery is
+a historical authority fact: live and reconciled paths re-verify its exact
+bytes and signature at the signed emission time rather than treating delivery
+time as a new admission. Broker retention can delay or remove a wake-up, but it
+cannot extend admission or delete the PostgreSQL authority record.
 
 An outbox worker claims committed rows with a lease, publishes with a
 deterministic message ID derived from the immutable outbox ID, and marks the row
@@ -346,8 +357,12 @@ idempotent.
 An edge delivery includes:
 
 - exact signed SSP bytes as payload;
-- tenant, edge ID token, generation, database delivery sequence, semantic
-  commitment, and outbox ID as authenticated transport metadata;
+- a subject containing opaque SHA-256 tokens derived from tenant and
+  domain-or-edge-plus-generation routing values;
+- exact `Snagline-Outbox-ID` and `Snagline-Fact-Sequence` headers, plus
+  `Snagline-Delivery-Sequence` and `Snagline-Edge-Generation` for edge
+  deliveries. The semantic commitment is recomputed from the exact payload,
+  not accepted from a transport header;
 - no provider/session locator.
 
 Broker stream sequence is diagnostic only. An edge advances only the contiguous
@@ -387,8 +402,15 @@ OpenCase(request) -> pending or accepted_remote receipt
 RetryCase(case_id) -> pending or accepted_remote receipt
 GetCase(case_id) -> local case state
 ListAdvice(case_id) -> accepted inert advice
-PresentAdvice(case_id, advice_id, front) -> durable display receipt
+PresentAdvice(advice_id) -> one accepted inert advice
+ClaimFrontDeliveries(front, worker, lease) -> leased durable display work
+AckFrontDelivery(receipt) -> durable display outcome
 ```
+
+The Unix-socket HTTP adapter realizes these as a separate
+`GET /v1/advice/{advice_id}` read and `POST /v1/fronts/{front}/claims` plus
+`POST /v1/fronts/{front}/acks` delivery flow. Reading advice is not itself a
+display receipt.
 
 There is no `Execute`, `Inject`, `Approve`, arbitrary mailbox instruction,
 generic signer, or remote-control method.
@@ -431,10 +453,12 @@ The projector:
 
 Projector state is an AES-GCM-encrypted SQLite blob in a descriptor-validated,
 current-user-owned `0700` directory. SQLite runs WAL with `synchronous=FULL`,
-`fullfsync=ON`, and `checkpoint_fullfsync=ON`; startup fails closed if those
-settings are unavailable. The prepared-event and supersession barriers
-therefore survive a process crash without exposing SSP or Nostr bytes in the
-database or WAL.
+which is the shipped Linux crash-durability guarantee. It also requires
+`fullfsync=ON` and `checkpoint_fullfsync=ON` as macOS `F_FULLFSYNC` insurance;
+those pragmas are functionally inert on Linux but are still checked so the
+cross-platform profile cannot silently weaken. The prepared-event and
+supersession barriers therefore survive a process crash without exposing SSP
+or Nostr bytes in the database or WAL.
 
 The local filesystem boundary trusts the runtime UID. Stock portable SQLite
 cannot keep WAL sidecars beside a database opened exclusively through an
@@ -487,19 +511,23 @@ commit: response shape, NIP-98, NIP-OA, channel-scoped exact-ID query, timestamp
 expiry, duplicate/ambiguous outcomes, complete open-channel inventory,
 human-steered ACP wake, agent reply, and the narrow dispatcher-tool call.
 
-Stock Buzz grants an authenticated channel member broader channel reads; it
-cannot server-enforce an exact-ID-only query capability. The dedicated
-projector key is therefore treated as a community/open-channel-read credential, isolated from
-all specialist and dispatcher keys, and used by code that implements only the
+Stock Buzz cannot server-enforce an exact-ID-only query capability. In the
+shared community, every ordinary channel is open, so the dedicated projector
+key must be treated as a credential able to read community-visible traffic and
+publish events under the projector identity, not merely as a credential for
+its configured destination channels. Any direct message visible to that
+identity is also inside its compromise radius. The key is isolated from all
+specialist and dispatcher keys, and the projector code implements only the
 narrow calls above. A deployment that requires server-enforced least privilege
 must place an independently attested policy gateway in front of Buzz. Even if
-the projector key is compromised, it has no control-write credential, SSP
-signing key, edge key, provider credential, inbound Buzz subscription,
-Buzz cursor, backfill-to-SSP path, or finalization API.
+the projector key is compromised, it cannot impersonate other identities and
+has no control-write credential, SSP signing key, edge key, provider
+credential, authority-side inbound Buzz subscription, backfill-to-SSP path, or
+finalization API.
 
 The reproducible external deployment contract and fail-closed evidence gate are
 defined in [stock-buzz-deployment.md](stock-buzz-deployment.md) and
-`deploy/buzz/`. They pin the upstream commit and image digest, one closed relay
+`deploy/buzz/`. They pin the upstream commit and image digest, one authenticated relay
 community, distinct human and NIP-OA-managed agent identities, open ordinary
 channels, DM-only privacy, operator-naming agent profiles, exact official-channel
 ACP rules, separate global author allowlists, and the externally enforced
