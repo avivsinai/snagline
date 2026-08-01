@@ -46,6 +46,7 @@ type runtimeConfig struct {
 	PostgresDSN, AuthorityID, WorkerID, OpsSocket string
 	NATSURL, NATSCredentialsFile, NATSCAFile      string
 	BatchSize                                     int
+	SingleNodeTestStream                          bool
 	Lease, RetryDelay, PollInterval               time.Duration
 	postgresPoolConfig                            *pgxpool.Config
 }
@@ -65,6 +66,10 @@ func main() {
 }
 
 func parseConfig(args []string) (runtimeConfig, error) {
+	singleNodeTestDefault, err := exactBoolEnv("SNAGLINE_DELIVERY_SINGLE_NODE_TEST_STREAM", false)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
 	flags := flag.NewFlagSet("snagline-delivery", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	dsn := flags.String("postgres-dsn", env("SNAGLINE_DELIVERY_POSTGRES_DSN", ""), "PostgreSQL DSN")
@@ -78,10 +83,11 @@ func parseConfig(args []string) (runtimeConfig, error) {
 	retryDelay := flags.Duration("retry-delay", envDuration("SNAGLINE_DELIVERY_RETRY_DELAY", defaultRetryDelay), "outbox retry delay")
 	pollInterval := flags.Duration("poll-interval", envDuration("SNAGLINE_DELIVERY_POLL_INTERVAL", defaultPollInterval), "delay between bounded runs")
 	opsSocket := flags.String("ops-socket", env("SNAGLINE_DELIVERY_OPS_SOCKET", ""), "absolute private Unix operations socket")
+	singleNodeTestStream := flags.Bool("single-node-test-stream", singleNodeTestDefault, "use one JetStream replica for an explicit single-node test deployment")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return runtimeConfig{}, errors.New("invalid flags")
 	}
-	result := runtimeConfig{PostgresDSN: *dsn, AuthorityID: *authorityID, WorkerID: *workerID, OpsSocket: *opsSocket, NATSURL: *natsURL, NATSCredentialsFile: *credentialsFile, NATSCAFile: *caFile, BatchSize: *batchSize, Lease: *lease, RetryDelay: *retryDelay, PollInterval: *pollInterval}
+	result := runtimeConfig{PostgresDSN: *dsn, AuthorityID: *authorityID, WorkerID: *workerID, OpsSocket: *opsSocket, NATSURL: *natsURL, NATSCredentialsFile: *credentialsFile, NATSCAFile: *caFile, BatchSize: *batchSize, SingleNodeTestStream: *singleNodeTestStream, Lease: *lease, RetryDelay: *retryDelay, PollInterval: *pollInterval}
 	if err := result.validate(); err != nil {
 		return runtimeConfig{}, err
 	}
@@ -136,7 +142,7 @@ func run(ctx context.Context, config runtimeConfig) error {
 	if err != nil {
 		return errors.New("JetStream delivery is unavailable")
 	}
-	if err := deliverystream.EnsureStream(ctx, js); err != nil {
+	if err := deliverystream.EnsureStream(ctx, js, config.streamMode()); err != nil {
 		return errors.New("JetStream delivery stream is unavailable")
 	}
 	worker := outbox.Worker{Source: source, Publisher: outbox.JetStreamPublisher{JetStream: js}, WorkerID: config.WorkerID, Limit: config.BatchSize, Lease: config.Lease, RetryDelay: config.RetryDelay}
@@ -158,6 +164,13 @@ func run(ctx context.Context, config runtimeConfig) error {
 		tracker.RecordSuccess(runtimeops.Measurements{})
 		return nil
 	})
+}
+
+func (config runtimeConfig) streamMode() deliverystream.StreamMode {
+	if config.SingleNodeTestStream {
+		return deliverystream.StreamModeSingleNodeTest
+	}
+	return deliverystream.StreamModeProduction
 }
 
 func deliveryReady(ctx context.Context, pool *pgxpool.Pool, nc *nats.Conn, js jetstream.JetStream, tracker *runtimeops.Tracker, freshness time.Duration) error {
@@ -285,6 +298,21 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return 0
 	}
 	return parsed
+}
+
+func exactBoolEnv(name string, fallback bool) (bool, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return fallback, nil
+	}
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, errors.New("boolean environment value must be exactly true or false")
+	}
 }
 
 func anyBlank(values ...string) bool {

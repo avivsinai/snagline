@@ -1,6 +1,7 @@
 package ssp
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -154,6 +155,53 @@ func TestVerifyRejectsMalformedSurrogatesBeforeSignature(t *testing.T) {
 	}
 }
 
+// TestVerifyRejectsInvalidUnicodePublicSummaryBeforeSignature ensures the
+// outbound-safe text cannot use an invalid byte sequence or an unpaired UTF-16
+// surrogate to evade the body contract. The signature is deliberately retained
+// so rejection must happen before signature verification.
+func TestVerifyRejectsInvalidUnicodePublicSummaryBeforeSignature(t *testing.T) {
+	_, signing, verifying := strictTestKeys(t)
+	keys := map[string]identity.Ed25519VerifyingKey{"key-1": verifying}
+	for _, family := range []string{FamilyCase, FamilyAdvice} {
+		t.Run(family, func(t *testing.T) {
+			var members []string
+			if family == FamilyCase {
+				members = strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"bounded","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, "")
+			} else {
+				members = strictAdviceMembers(`{"case_commitment":"sha256:`+strings.Repeat("c", 64)+`","text":"confidential advice","public_summary":"bounded"}`, "")
+			}
+			valid := signRawMembers(t, signing, members)
+			if _, err := Verify(valid, keys, unicodeSignNow); err != nil {
+				t.Fatalf("control wire rejected: %v", err)
+			}
+
+			for name, publicSummary := range map[string][]byte{
+				"invalid UTF-8":           append([]byte(`"public_summary":"`), 0xff, '"'),
+				"unpaired high surrogate": []byte(`"public_summary":"\uD800"`),
+				"unpaired low surrogate":  []byte(`"public_summary":"\uDC00"`),
+			} {
+				t.Run(name, func(t *testing.T) {
+					wire := bytes.Replace(valid, []byte(`"public_summary":"bounded"`), publicSummary, 1)
+					if string(wire) == string(valid) {
+						t.Fatal("public_summary substitution did not apply")
+					}
+					_, err := Verify(wire, keys, unicodeSignNow)
+					if err == nil {
+						t.Fatal("Verify accepted invalid Unicode in public_summary")
+					}
+					message := err.Error()
+					if !strings.Contains(message, "UTF-8") && !strings.Contains(message, "surrogate") {
+						t.Fatalf("Verify rejected for the wrong reason (%v); invalid public_summary Unicode must fail at the parse boundary", err)
+					}
+					if strings.Contains(message, "signature") {
+						t.Fatalf("Verify rejected at the signature layer (%v); invalid public_summary Unicode reached signature handling", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSignRejectsDistinctInvalidUTF8OpaqueIdentifierAliases(t *testing.T) {
 	_, signing, _ := strictTestKeys(t)
 
@@ -196,17 +244,17 @@ func TestValidateRejectsInvalidUTF8OpaqueBodyIdentifiers(t *testing.T) {
 	baseAdvice := baseCase
 	baseAdvice.Schema = "ssp.advice.v1"
 	baseAdvice.ID = "advice-envelope-1"
-	baseAdvice.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"advice"}`)
+	baseAdvice.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"confidential advice","public_summary":"advice"}`)
 	for suffixName, suffix := range map[string]string{"ed-a0-80": string([]byte{0xED, 0xA0, 0x80}), "ed-a0-81": string([]byte{0xED, 0xA0, 0x81})} {
 		for name, mutate := range map[string]func(*Envelope){
 			"case domain": func(e *Envelope) {
-				e.Body = json.RawMessage(`{"domain":"runtime` + suffix + `","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
+				e.Body = json.RawMessage(`{"domain":"runtime` + suffix + `","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
 			},
 			"case issuer edge": func(e *Envelope) {
-				e.Body = json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge-1` + suffix + `","issuer_edge_generation":1,"summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
+				e.Body = json.RawMessage(`{"domain":"runtime","issuer_edge_id":"edge-1` + suffix + `","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`)
 			},
 			"advice case commitment": func(e *Envelope) {
-				e.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + suffix + `","text":"advice"}`)
+				e.Body = json.RawMessage(`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + suffix + `","text":"confidential advice","public_summary":"advice"}`)
 			},
 		} {
 			t.Run(suffixName+"/"+name, func(t *testing.T) {

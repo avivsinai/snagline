@@ -40,6 +40,7 @@ type OpenCaseRequest struct {
 	CaseID          string
 	Domain          string
 	Summary         string
+	PublicSummary   string
 	ContextManifest string
 	Registry        RegistryCoordinates
 }
@@ -223,8 +224,9 @@ func (s *Service) OpenCase(ctx context.Context, request OpenCaseRequest) (CaseSu
 		IssuerEdgeID         string `json:"issuer_edge_id"`
 		IssuerEdgeGeneration int64  `json:"issuer_edge_generation"`
 		Summary              string `json:"summary"`
+		PublicSummary        string `json:"public_summary"`
 		ContextManifest      string `json:"context_manifest"`
-	}{request.Domain, s.edgeID, s.edgeGeneration, request.Summary, request.ContextManifest})
+	}{Domain: request.Domain, IssuerEdgeID: s.edgeID, IssuerEdgeGeneration: s.edgeGeneration, Summary: request.Summary, PublicSummary: request.PublicSummary, ContextManifest: request.ContextManifest})
 	if err != nil {
 		return CaseSubmission{}, fmt.Errorf("edge: encode case body: %w", err)
 	}
@@ -334,6 +336,7 @@ type FinalizeAdviceRequest struct {
 	CaseID         string
 	CaseCommitment string
 	Text           string
+	PublicSummary  string
 }
 
 // PendingAdvice is durable encrypted local state for the one final advice
@@ -411,7 +414,8 @@ type AdviceSubmission struct {
 
 // FinalizeAdvice is a one-shot dispatcher action. It derives all header
 // coordinates from the committed case and signs a body containing exactly the
-// case commitment and inert text. It spools before submission and cannot mint
+// case commitment, confidential inert text, and explicit public summary. It
+// spools before submission and cannot mint
 // a second finalization for a case after a lost response.
 func (s *Finalizer) FinalizeAdvice(ctx context.Context, request FinalizeAdviceRequest) (AdviceSubmission, error) {
 	if s == nil {
@@ -450,7 +454,8 @@ func (s *Finalizer) FinalizeAdvice(ctx context.Context, request FinalizeAdviceRe
 	body, err := json.Marshal(struct {
 		CaseCommitment string `json:"case_commitment"`
 		Text           string `json:"text"`
-	}{request.CaseCommitment, request.Text})
+		PublicSummary  string `json:"public_summary"`
+	}{CaseCommitment: request.CaseCommitment, Text: request.Text, PublicSummary: request.PublicSummary})
 	if err != nil {
 		return AdviceSubmission{}, fmt.Errorf("edge: encode advice body: %w", err)
 	}
@@ -506,6 +511,9 @@ func validateOpenCaseRequest(request OpenCaseRequest) error {
 	if !validText(request.Summary, 4096) {
 		return errors.New("edge: case summary must contain 1..4096 UTF-8 code points")
 	}
+	if !validText(request.PublicSummary, 1024) {
+		return errors.New("edge: public case summary must contain 1..1024 UTF-8 code points")
+	}
 	if !sha256Commitment.MatchString(request.ContextManifest) || !sha256Commitment.MatchString(request.Registry.Hash) || request.Registry.RoutingEpoch < 0 || request.Registry.Revision < 0 {
 		return errors.New("edge: case registry coordinates or context manifest are invalid")
 	}
@@ -513,7 +521,7 @@ func validateOpenCaseRequest(request OpenCaseRequest) error {
 }
 
 func validateFinalizeAdviceRequest(request FinalizeAdviceRequest) error {
-	if !validOpaque(request.CaseID) || !sha256Commitment.MatchString(request.CaseCommitment) || !validText(request.Text, 8192) {
+	if !validOpaque(request.CaseID) || !sha256Commitment.MatchString(request.CaseCommitment) || !validText(request.Text, 8192) || !validText(request.PublicSummary, 1024) {
 		return errors.New("edge: advice request is invalid")
 	}
 	return nil

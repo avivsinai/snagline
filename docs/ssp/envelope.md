@@ -29,11 +29,13 @@ Registry-key records do not self-authorize a registry: verification starts with
 the caller-pinned registry key and key ID.
 
 `ssp.case.v1` body requires `domain`, `issuer_edge_id`,
-`issuer_edge_generation`, `summary`, and `context_manifest`. A case is valid
+`issuer_edge_generation`, confidential `summary`, explicit `public_summary`,
+and `context_manifest`. A case is valid
 only when its enrolled edge, generation, signing edge key, route epoch, and
 route family resolve from the accepted registry.
 
-`ssp.advice.v1` body requires `case_commitment` and `text`.
+`ssp.advice.v1` body requires `case_commitment`, confidential inert `text`, and
+explicit `public_summary`.
 `case_commitment` is the SHA-256 commitment to exactly one already accepted
 case signing input with the same case ID, registry pair, and routing epoch. Its
 author must resolve to that case route's dispatcher advice key. Advice is
@@ -45,3 +47,5 @@ finite delivery only; it may duplicate, delay, or lose a delivery and never
 establishes authority. Stock Buzz is an outbound, disposable projection of
 accepted artifacts: its event identity, membership, acknowledgements, and
 transport metadata are not SSP authority and are never added to an envelope.
+Its cards use only `public_summary`; confidential case `summary` and advice
+`text` never cross that projection boundary.

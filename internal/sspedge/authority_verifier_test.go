@@ -287,7 +287,7 @@ func newAuthorityVerifierFixture(t *testing.T) authorityVerifierFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	caseBody := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":3,"summary":"historical private case","context_manifest":"` + verifierDigest("manifest") + `"}`)
+	caseBody := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":3,"summary":"historical private case","public_summary":"bounded public case","context_manifest":"` + verifierDigest("manifest") + `"}`)
 	caseRaw := signVerifierEnvelope(t, ssp.Envelope{
 		Schema: ssp.FamilyCase, ID: "case-envelope", CaseID: "case-1",
 		EmittedAt:    emittedAt.Format(time.RFC3339),
@@ -371,7 +371,7 @@ func (f authorityVerifierFixture) signAdviceVariant(
 		keyID = "edge-key"
 	}
 	at := f.emittedAt.Add(time.Minute)
-	body, err := json.Marshal(map[string]string{"case_commitment": caseCommitment, "text": text})
+	body, err := json.Marshal(map[string]string{"case_commitment": caseCommitment, "text": text, "public_summary": "bounded public advice"})
 	if err != nil {
 		t.Fatal(err)
 	}

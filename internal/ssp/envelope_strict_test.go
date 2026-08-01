@@ -29,7 +29,7 @@ func TestVerifyRejectsSignedCaseFoldedMembers(t *testing.T) {
 		},
 		{
 			name:    "body alias",
-			members: strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","Summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
+			members: strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","Summary":"help","public_summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
 		},
 		{
 			name:    "forbidden provenance",
@@ -59,8 +59,8 @@ func TestVerifyRejectsSignedCanonicalAliasCollisionsInEitherOrder(t *testing.T) 
 			append([]string{`"Schema":"ssp.case.v1"`}, base...),
 		},
 		"body": {
-			strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","Summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
-			strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"Summary":"help","summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
+			strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","Summary":"help","public_summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
+			strictCaseMembers(`{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"Summary":"help","summary":"confidential help","public_summary":"help","context_manifest":"sha256:`+strings.Repeat("b", 64)+`"}`, ""),
 		},
 		"forbidden provenance": {
 			strictCaseMembers(strictCaseBody(), `{"transport":"direct","Transport":"direct"}`),
@@ -109,8 +109,8 @@ func TestVerifyRejectsSignedAdviceOptionalPresenceViolations(t *testing.T) {
 	public, signing, verifying := strictTestKeys(t)
 	now := strictTestNow()
 	for _, body := range []string{
-		`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"advice","obsolete_field":""}`,
-		`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"advice","obsolete_field":null}`,
+		`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"confidential advice","public_summary":"advice","obsolete_field":""}`,
+		`{"case_commitment":"sha256:` + strings.Repeat("c", 64) + `","text":"confidential advice","public_summary":"advice","obsolete_field":null}`,
 	} {
 		wire := signRawMembers(t, signing, strictAdviceMembers(body, ""))
 		assertSignedWire(t, public, wire)
@@ -256,7 +256,7 @@ func strictAdviceMembers(body, provenance string) []string {
 }
 
 func strictCaseBody() string {
-	return `{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`
+	return `{"domain":"runtime","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"sha256:` + strings.Repeat("b", 64) + `"}`
 }
 
 func signRawMembers(t *testing.T, signing identity.Ed25519SigningKey, members []string) []byte {

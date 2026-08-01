@@ -36,6 +36,16 @@ const (
 	DefaultMaxDeliver = 20
 )
 
+// StreamMode prevents callers from selecting an arbitrary replica count. The
+// single-node value is a conspicuous test deployment exception, never an
+// inferred production fallback.
+type StreamMode string
+
+const (
+	StreamModeProduction     StreamMode = "production"
+	StreamModeSingleNodeTest StreamMode = "single-node-test"
+)
+
 // DestinationKind identifies the intended delivery recipient. It is not an
 // SSP family: the payload remains the exact bytes persisted by the outbox.
 type DestinationKind string
@@ -47,7 +57,15 @@ const (
 
 // StreamConfig is intentionally fixed and bounded. A discarded delivery
 // message is recovered from PostgreSQL rather than treated as data loss.
-func StreamConfig() jetstream.StreamConfig {
+func StreamConfig(mode StreamMode) (jetstream.StreamConfig, error) {
+	replicas := ProductionReplicas
+	switch mode {
+	case StreamModeProduction:
+	case StreamModeSingleNodeTest:
+		replicas = 1
+	default:
+		return jetstream.StreamConfig{}, fmt.Errorf("unsupported SSP delivery stream mode")
+	}
 	return jetstream.StreamConfig{
 		Name:       StreamName,
 		Subjects:   []string{SubjectPrefix + ".>"},
@@ -57,18 +75,22 @@ func StreamConfig() jetstream.StreamConfig {
 		MaxBytes:   DefaultMaxBytes,
 		MaxMsgSize: ssp.MaxEnvelopeBytes,
 		Storage:    jetstream.FileStorage,
-		Replicas:   ProductionReplicas,
+		Replicas:   replicas,
 		Duplicates: DefaultMaxAge,
-	}
+	}, nil
 }
 
 // EnsureStream creates the one delivery stream. It holds no authoritative SSP
 // history and is never used to decide delivery completeness.
-func EnsureStream(ctx context.Context, js jetstream.JetStream) error {
+func EnsureStream(ctx context.Context, js jetstream.JetStream, mode StreamMode) error {
 	if js == nil {
 		return fmt.Errorf("SSP delivery JetStream is required")
 	}
-	_, err := js.CreateOrUpdateStream(ctx, StreamConfig())
+	config, err := StreamConfig(mode)
+	if err != nil {
+		return err
+	}
+	_, err = js.CreateOrUpdateStream(ctx, config)
 	return err
 }
 

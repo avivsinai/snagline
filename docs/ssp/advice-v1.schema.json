@@ -20,10 +20,11 @@
     "body": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["case_commitment", "text"],
+      "required": ["case_commitment", "text", "public_summary"],
       "properties": {
         "case_commitment": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "minLength": 71, "maxLength": 71},
-        "text": {"type": "string", "minLength": 1, "maxLength": 8192}
+        "text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "public_summary": {"type": "string", "minLength": 1, "maxLength": 1024}
       }
     }
   },

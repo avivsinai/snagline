@@ -81,8 +81,10 @@ func TestPristineAuthorityEdgeAndBuzzRecovery(t *testing.T) {
 	}
 
 	js := newPristineJetStream(t, ctx)
-	stream := deliverystream.StreamConfig()
-	stream.Replicas = 1 // Embedded test broker: delivery acceleration remains non-authoritative.
+	stream, err := deliverystream.StreamConfig(deliverystream.StreamModeSingleNodeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := js.CreateOrUpdateStream(ctx, stream); err != nil {
 		t.Fatalf("create one-replica delivery stream: %v", err)
 	}
@@ -185,7 +187,8 @@ func TestPristineAuthorityEdgeAndBuzzRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := buzz.NewStockRelayClient(buzz.StockRelayConfig{RelayURL: relay.URL, Signer: buzzSigner, Clock: func() time.Time { return now }, AllowInsecureHTTPForTests: true})
+	authTagFile := pristineNIPOAAuthTagFile(t, buzzSigner)
+	client, err := buzz.NewStockRelayClient(buzz.StockRelayConfig{RelayURL: relay.URL, Signer: buzzSigner, NIPOAAuthTagFile: authTagFile, Clock: func() time.Time { return now }, AllowInsecureHTTPForTests: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +330,7 @@ func pristineRegistry(t *testing.T, now time.Time) (registry.Trust, []byte, iden
 
 func pristineCase(t *testing.T, now time.Time, registryHash string, key identity.Ed25519SigningKey) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-pristine","issuer_edge_generation":7,"summary":"private support summary","context_manifest":"` + pristineDigest("manifest") + `"}`)
+	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-pristine","issuer_edge_generation":7,"summary":"private support summary","public_summary":"bounded public support summary","context_manifest":"` + pristineDigest("manifest") + `"}`)
 	raw, err := ssp.Sign(ssp.Envelope{Schema: ssp.FamilyCase, ID: "case-pristine", CaseID: "case-pristine", EmittedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), RoutingEpoch: 3, RegistryRevision: 1, RegistryHash: registryHash, AuthorKeyID: "edge-key", SignatureAlg: "ed25519", Body: body}, key, now)
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +340,7 @@ func pristineCase(t *testing.T, now time.Time, registryHash string, key identity
 
 func pristineAdvice(t *testing.T, now time.Time, registryHash, caseCommitment string, key identity.Ed25519SigningKey) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"display this inert advice"}`)
+	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"display this inert advice","public_summary":"bounded public advice summary"}`)
 	raw, err := ssp.Sign(ssp.Envelope{Schema: ssp.FamilyAdvice, ID: "advice-pristine", CaseID: "case-pristine", EmittedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), RoutingEpoch: 3, RegistryRevision: 1, RegistryHash: registryHash, AuthorKeyID: "dispatcher-key", SignatureAlg: "ed25519", Body: body}, key, now)
 	if err != nil {
 		t.Fatal(err)
@@ -352,6 +355,28 @@ func pristineKey(id string, public ed25519.PublicKey, principal, usage string, n
 func pristineDigest(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func pristineNIPOAAuthTagFile(t *testing.T, agent buzz.DigestSigner) string {
+	t.Helper()
+	owner, err := buzz.NewPrivateKeySignerBytes(bytes.Repeat([]byte{2}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("nostr:agent-auth:" + agent.PublicKey() + ":"))
+	signature, err := owner.SignDigest(context.Background(), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal([]string{"auth", owner.PublicKey(), "", signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nip-oa-auth-tag.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func newPristineJetStream(t *testing.T, ctx context.Context) jetstream.JetStream {

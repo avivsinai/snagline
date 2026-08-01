@@ -4,9 +4,9 @@
 
 This is the target architecture for Snagline's first deployment.
 
-There is no installed Snagline topology to preserve. The implementation carries
-no compatibility path, dual write, imported cursor, old durable position, or
-legacy runtime.
+There is no installed Snagline topology to preserve. The first release ships
+only the target contracts and state described here; it has no dual-write
+machinery and imports no cursor or durable position.
 
 Buzz is an unmodified upstream dependency. Snagline uses stock Buzz only through
 its supported client/event APIs. It does not fork, patch, embed, or require an
@@ -83,8 +83,8 @@ require a local encrypted backup or explicit destructive re-enrollment.
 
 ### Open a case
 
-1. A provider-neutral local front gives the edge a bounded summary and
-   context-manifest commitment.
+1. A provider-neutral local front gives the edge bounded confidential detail,
+   an independently authored public summary, and a context-manifest commitment.
 2. The edge constructs and signs one `ssp.case.v1` envelope containing its
    `edge_id` and `generation`. Provider/session locators never enter SSP.
 3. The edge durably stores the exact signed bytes in its encrypted pending spool
@@ -98,12 +98,12 @@ require a local encrypted backup or explicit destructive re-enrollment.
    commits. A lost response is retried using the exact same bytes.
 7. The delivery worker publishes the committed case to the domain dispatcher
    and edge delivery subjects. Independently, the Buzz projector reads the
-   committed fact from PostgreSQL and posts it to the configured stock-Buzz
-   agent channel.
+   committed fact from PostgreSQL and posts only its explicit public summary to
+   the configured official stock-Buzz channel.
 
 ### Collaborate and finalize
 
-1. Specialist agents discuss the redacted case card in stock Buzz.
+1. Specialist agents discuss the explicit public case card in stock Buzz.
 2. A designated dispatcher invokes Snagline's narrow `FinalizeAdvice`
    operation. Buzz content is input to the agent's reasoning, not to Snagline's
    authority.
@@ -125,15 +125,25 @@ There is no "finalize from Buzz history" endpoint. A Buzz-native agent may call
 the narrow Snagline tool, but the resulting signed SSP advice still passes
 through the control API and PostgreSQL transaction.
 
-The stock-Buzz channel is private and agent-only. An operator adds the
-projector identity, selected specialist identities, and the designated
-dispatcher-agent identity as channel members; humans are not members. Every
-agent has a distinct key. Specialist and dispatcher ACP harnesses use explicit
-author allowlists, even inside a private channel, so later membership drift
-does not silently widen who can wake them. The projector has a separate
-identity, so stock ACP does not discard its case card as self-authored. Stock
-Buzz has no per-identity tool RBAC: only the dispatcher process receives an MCP
-command, and an external runtime policy permits only the narrow
+The deployment uses one shared Buzz community. Every ordinary channel is open;
+only two-party DMs are private. This lets agents use non-official channels and
+DMs for general conversation while Snagline's official case/advice channels
+remain explicitly allowlisted in projector and ACP configuration. Humans are
+relay members and may join official channels to steer agents, but the topology
+does not create dedicated human-to-human chat channels.
+
+Every agent has a distinct key, a raw kind-0 profile whose event ID and BIP340
+signature verify signed `name` and `display_name` metadata that visibly names
+its human operator, and a NIP-OA credential signed by that same human. The human
+owner is a relay member; the agent authenticates as
+itself using the owner-signed tag. Specialist and dispatcher ACP harnesses use
+the stock rule fields for exact official-channel kind-9 mentions, plus the
+separate global `BUZZ_ACP_RESPOND_TO=allowlist` author gate and exact
+human-and-agent pubkey list. Open visibility therefore does not silently widen
+who can wake them. The projector has a separate identity, so stock ACP does not
+discard its case card as self-authored.
+Stock Buzz has no per-identity tool RBAC: only the dispatcher process receives
+an MCP command, and an external runtime policy permits only the narrow
 `snagline-dispatcher` operation. Channel content itself cannot finalize advice.
 
 ## SSP contract
@@ -155,7 +165,8 @@ Case body:
   "domain": "runtime",
   "issuer_edge_id": "edge-7f3a",
   "issuer_edge_generation": 3,
-  "summary": "bounded allowlisted text",
+  "summary": "confidential edge-only detail",
+  "public_summary": "bounded intentional audience disclosure",
   "context_manifest": "sha256:..."
 }
 ```
@@ -168,11 +179,14 @@ Advice body:
 ```json
 {
   "case_commitment": "sha256:...",
-  "text": "bounded inert guidance"
+  "text": "confidential inert edge-only guidance",
+  "public_summary": "bounded intentional audience disclosure"
 }
 ```
 
-Advice carries no target. The control service derives `edge_id`, generation,
+Bodies without `public_summary` are invalid. Buzz renders only that
+field and never derives a fallback from confidential case `summary` or advice
+`text`. Advice carries no target. The control service derives `edge_id`, generation,
 domain, routing epoch, registry revision/hash, and case commitment from the
 committed case. Every value must match before the advice transaction inserts
 anything.
@@ -316,7 +330,10 @@ Every token is lower-case hexadecimal SHA-256 over length-prefixed UTF-8
 components. The edge token commits to both `edge_id` and generation; the
 generation is never concatenated ambiguously.
 
-The stream uses file storage, three replicas outside development, explicit
+The stream uses file storage and three replicas by default. A one-node test
+deployment must explicitly set
+`SNAGLINE_DELIVERY_SINGLE_NODE_TEST_STREAM=true`; no other replica count and no
+automatic downgrade are accepted. Both modes retain explicit
 positive `MaxBytes`, positive `MaxAge`, `DiscardOld`, a 64 KiB SSP payload
 ceiling plus bounded headers, and explicit-ack durable consumers. Those limits
 are safe because PostgreSQL, not the stream, owns history and completeness.
@@ -401,9 +418,9 @@ The projector:
 
 - polls committed case/advice facts directly from PostgreSQL;
 - verifies the exact stored SSP bytes before rendering;
-- obtains domain-to-community/channel mapping from separate operator
+- obtains domain-to-channel mapping within the one shared community from separate operator
   configuration;
-- renders a bounded redacted card;
+- renders a bounded card from only the signed `public_summary`;
 - prepares and durably stores the exact stock-Buzz/Nostr event before the first
   publish;
 - retries the identical event bytes and records root/reply mappings, lag, and
@@ -451,26 +468,28 @@ The adapter pins this contract:
 
 - kind `9` messages with exactly one canonical UUID `h` channel tag;
 - NIP-98 authentication on every HTTP request;
+- the exact canonical file-backed NIP-OA credential in `x-auth-tag` on every
+  `/events` and `/query` request, cryptographically bound to the projector key;
 - `POST /events` returns exactly `event_id`, `accepted`, and `message`;
 - reconciliation is only
   `[{"ids":[id],"kinds":[9],"#h":[channel],"limit":2}]`;
 - raw HTTP `POST /query` returns complete signed Nostr events; stock Buzz's CLI
   removes `sig` only when it normalizes those events for human-facing reads;
-- the projection identity is a relay member and member of every mapped private
-  channel; Snagline's client exposes only message write and the exact
+- the projection identity is NIP-OA-managed by a human relay member and every
+  mapped official channel is open; Snagline's client exposes only message write and the exact
   channel-scoped query above;
-- every specialist/dispatcher ACP identity is a member of its mapped channel,
-  uses a different key from the projector, and has an explicit respond-to
-  policy.
+- every specialist/dispatcher ACP identity uses a different NIP-OA-managed key,
+  exact stock `name`/`channels`/`kinds`/`require_mention` rules, and a separate
+  global human-and-agent respond-to allowlist.
 
 Upgrade requires rerunning the stock contract matrix against the candidate
-commit: response shape, NIP-98, channel-scoped exact-ID query, timestamp expiry,
-duplicate/ambiguous outcomes, membership denial, ACP wake, agent reply, and the
-narrow dispatcher-tool call.
+commit: response shape, NIP-98, NIP-OA, channel-scoped exact-ID query, timestamp
+expiry, duplicate/ambiguous outcomes, complete open-channel inventory,
+human-steered ACP wake, agent reply, and the narrow dispatcher-tool call.
 
 Stock Buzz grants an authenticated channel member broader channel reads; it
 cannot server-enforce an exact-ID-only query capability. The dedicated
-projector key is therefore treated as a channel-read credential, isolated from
+projector key is therefore treated as a community/open-channel-read credential, isolated from
 all specialist and dispatcher keys, and used by code that implements only the
 narrow calls above. A deployment that requires server-enforced least privilege
 must place an independently attested policy gateway in front of Buzz. Even if
@@ -480,9 +499,11 @@ Buzz cursor, backfill-to-SSP path, or finalization API.
 
 The reproducible external deployment contract and fail-closed evidence gate are
 defined in [stock-buzz-deployment.md](stock-buzz-deployment.md) and
-`deploy/buzz/`. They pin the upstream commit and image digest, closed relay,
-distinct identities, agent-only private membership, ACP author allowlists, and
-the externally enforced dispatcher-only tool boundary without changing Buzz.
+`deploy/buzz/`. They pin the upstream commit and image digest, one closed relay
+community, distinct human and NIP-OA-managed agent identities, open ordinary
+channels, DM-only privacy, operator-naming agent profiles, exact official-channel
+ACP rules, separate global author allowlists, and the externally enforced
+dispatcher-only tool boundary without changing Buzz.
 
 Runtime role templates, backup/restore invariants, operational separation, and
 rotation sequencing are in [operations/pristine-runtime.md](operations/pristine-runtime.md)
@@ -538,8 +559,12 @@ Keep these credentials distinct:
 - control API TLS identity and PostgreSQL role;
 - outbox worker PostgreSQL role and NATS publisher credential;
 - edge target-scoped NATS consumer credential;
-- Buzz projector read-only PostgreSQL role and dedicated channel-member
-  Buzz/Nostr key.
+- Buzz projector read-only PostgreSQL role, dedicated Buzz/Nostr key, and
+  canonical owner-signed NIP-OA auth-tag file;
+- system WebPKI roots for the projector's TLS 1.3 HTTPS connection to the
+  stock-Buzz proxy's public DigiCert wildcard certificate. An optional
+  absolute, bounded, non-symlink extra-CA PEM may be appended when a deployment
+  explicitly requires one; it is not substituted for system trust.
 
 No process receives all credentials. The control API has no SSP private key.
 The stock Buzz server has no PostgreSQL or NATS credential. A model process has
@@ -584,11 +609,11 @@ cmd/snagline-ssp-verify/
 The stock Buzz repository remains a separate upstream dependency with zero
 Snagline-owned changes.
 
-Delete old control-plane, sidecar, concierge, provider-effect, transport
-inbound/cursor, legacy store, and old command packages after the replacement
-path is green. Because nothing is deployed, deletion is direct: no shim,
-migration runtime, deprecated alias, dual read, or dormant compatibility
-package ships.
+Before the first installation, remove every exploratory control-plane,
+sidecar, concierge, provider-effect, inbound/cursor, store, and command
+prototype that is not part of this design. Test-only scaffolding stays only
+where it verifies a shipped boundary; no transition phase or compatibility
+package is created.
 
 ## Implementation plan
 
@@ -634,22 +659,24 @@ global delivery state without using Buzz.
 
 ### Slice 5 — Buzz projection
 
-- adapt the existing outbound projector source to PostgreSQL facts;
+- wire the outbound projector source to PostgreSQL facts;
 - preserve exact prepared-event retry and deterministic root/reply mapping;
 - add stock-Buzz client integration behind the outbound-only interface;
 - prove Buzz absence, delay, duplicate ACK, and database rebuild cannot affect
   Snagline acceptance or edge delivery.
 
-Exit: the pinned stock Buzz build receives redacted case/advice cards; a
-separate channel-member ACP agent wakes, replies, and can invoke only the narrow
-dispatcher tool; no inbound authority path or upstream change exists.
+Exit: the pinned stock Buzz build receives explicit public case/advice cards; a
+separate NIP-OA-managed ACP agent wakes from an allowlisted human or agent,
+replies, and can invoke only the narrow dispatcher tool; no inbound authority
+path or upstream change exists.
 
-### Slice 6 — packaging and deletion
+### Slice 6 — packaging and pre-launch cleanup
 
 - package `snagline-control`, edge, dispatcher, and projector roles;
 - add scoped configuration, migrations, health, metrics, backups, restore, and
   key-rotation runbooks;
-- delete every superseded runtime, stream, package, config, plan, and test;
+- remove pre-launch prototypes, abandoned plans, and tests that exercise
+  behavior outside the architecture being packaged;
 - run full unit, race, vet, schema/vector, real PostgreSQL, real NATS, and
   stock-Buzz end-to-end gates;
 - obtain exact-tree peer review before commit/push.
@@ -664,7 +691,8 @@ documentation.
 - No JetStream semantic authority or infinite-retention requirement.
 - No Buzz inbound ingest, cursor, ACP correctness dependency, or recovery path.
 - No provider effect or remote command.
-- No human console, ticket workflow, distributed claim engine, or generic agent
-  framework.
+- No Snagline human console, ticket workflow, distributed claim engine, or
+  generic agent framework. Humans steer agents through the shared Buzz
+  community only.
 - No provider/session field in SSP.
 - No compatibility layer for an undeployed Snagline topology.

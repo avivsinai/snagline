@@ -361,6 +361,45 @@ func TestAdviceUsesPersistedCaseRootAndBuzzFailureDoesNotChangeJournal(t *testin
 	}
 }
 
+func TestProjectorPublishesOnlyExplicitPublicSummaries(t *testing.T) {
+	caseRecord := testCaseRecord(1, "case-1", "case-envelope-1", "support/sre")
+	adviceRecord := CommittedFact{Sequence: 2, EnvelopeID: "advice-envelope-1", Commitment: "sha256:" + repeat("b", 64), Raw: []byte("advice-raw")}
+	store := NewMemoryStore()
+	projector, err := NewProjector(ProjectorConfig{
+		Source: &fakeFactSource{records: []CommittedFact{caseRecord, adviceRecord}},
+		Verifier: fakeVerifier{envelopes: map[string]ssp.Envelope{
+			string(caseRecord.Raw):   testCaseEnvelope("case-1", "case-envelope-1", "support/sre"),
+			string(adviceRecord.Raw): testAdviceEnvelope("case-1", "advice-envelope-1"),
+		}},
+		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"},
+		Store:    store, Signer: &fakeSigner{}, Relay: &fakeRelay{}, Clock: func() time.Time { return projectorNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projector.Project(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projector.Project(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	for sequence, want := range map[uint64]string{1: "public case summary", 2: "public advice summary"} {
+		var event nostrEvent
+		if err := json.Unmarshal(store.State().Records[sequence].Wire, &event); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(event.Content, want) {
+			t.Fatalf("projection %d omitted explicit public summary: %s", sequence, event.Content)
+		}
+		for _, forbidden := range []string{"CONFIDENTIAL CASE DETAIL", "CONFIDENTIAL ADVICE DETAIL"} {
+			if strings.Contains(event.Content, forbidden) {
+				t.Fatalf("projection %d leaked confidential SSP content: %s", sequence, event.Content)
+			}
+		}
+	}
+}
+
 func TestProjectorPoisonAndLagRemainInPersistedState(t *testing.T) {
 	record := testCaseRecord(1, "case-1", "case-envelope-1", "support/sre")
 	store := NewMemoryStore()
@@ -561,7 +600,7 @@ func testCaseEnvelope(caseID, envelopeID, domain string) ssp.Envelope {
 		EmittedAt: "2029-12-31T23:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z",
 		RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: "sha256:" + repeat("d", 64),
 		AuthorKeyID: "edge-key", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"domain":"` + domain + `","issuer_edge_id":"edge/123","issuer_edge_generation":1,"summary":"help","context_manifest":"sha256:` + repeat("c", 64) + `"}`),
+		Body: json.RawMessage(`{"domain":"` + domain + `","issuer_edge_id":"edge/123","issuer_edge_generation":1,"summary":"CONFIDENTIAL CASE DETAIL","public_summary":"public case summary","context_manifest":"sha256:` + repeat("c", 64) + `"}`),
 	}
 }
 
@@ -571,7 +610,7 @@ func testAdviceEnvelope(caseID, envelopeID string) ssp.Envelope {
 		EmittedAt: "2029-12-31T23:00:00Z", ExpiresAt: "2030-01-01T01:00:00Z",
 		RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: "sha256:" + repeat("d", 64),
 		AuthorKeyID: "advice-key", SignatureAlg: "ed25519",
-		Body: json.RawMessage(`{"case_commitment":"sha256:` + repeat("a", 64) + `","text":"try this"}`),
+		Body: json.RawMessage(`{"case_commitment":"sha256:` + repeat("a", 64) + `","text":"CONFIDENTIAL ADVICE DETAIL","public_summary":"public advice summary"}`),
 	}
 }
 
@@ -603,7 +642,7 @@ func assertRedactedCard(t *testing.T, wire []byte, forbidden ...string) {
 	if err := json.Unmarshal([]byte(event.Content), &card); err != nil {
 		t.Fatalf("card is not JSON: %v", err)
 	}
-	if card["family"] != ssp.FamilyCase || card["summary"] != "help" || card["case_id"] != "case-1" {
+	if card["family"] != ssp.FamilyCase || card["summary"] != "public case summary" || card["case_id"] != "case-1" {
 		t.Fatalf("redacted card = %#v", card)
 	}
 }

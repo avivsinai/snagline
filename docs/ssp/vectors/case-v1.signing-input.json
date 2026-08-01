@@ -13,7 +13,8 @@
     "domain": "runtime",
     "issuer_edge_id": "edge-local-0001",
     "issuer_edge_generation": 1,
-    "summary": "Agent is waiting for a bounded support answer.",
+    "summary": "Synthetic confidential case detail for the owning edge.",
+    "public_summary": "Agent is waiting for a bounded support answer.",
     "context_manifest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
 }

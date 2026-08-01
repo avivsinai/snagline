@@ -94,6 +94,7 @@ func newHandler(service edgeAPI) http.Handler {
 			CaseID          string `json:"case_id"`
 			Domain          string `json:"domain"`
 			Summary         string `json:"summary"`
+			PublicSummary   string `json:"public_summary"`
 			ContextManifest string `json:"context_manifest"`
 			Registry        struct {
 				RoutingEpoch int64  `json:"routing_epoch"`
@@ -105,7 +106,7 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusBadRequest, apiError{OK: false, Code: "invalid_request"})
 			return
 		}
-		result, err := service.OpenCase(r.Context(), edge.OpenCaseRequest{CaseID: input.CaseID, Domain: input.Domain, Summary: input.Summary, ContextManifest: input.ContextManifest, Registry: edge.RegistryCoordinates{RoutingEpoch: input.Registry.RoutingEpoch, Revision: input.Registry.Revision, Hash: input.Registry.Hash}})
+		result, err := service.OpenCase(r.Context(), edge.OpenCaseRequest{CaseID: input.CaseID, Domain: input.Domain, Summary: input.Summary, PublicSummary: input.PublicSummary, ContextManifest: input.ContextManifest, Registry: edge.RegistryCoordinates{RoutingEpoch: input.Registry.RoutingEpoch, Revision: input.Registry.Revision, Hash: input.Registry.Hash}})
 		if err != nil {
 			writeHTTP(w, http.StatusUnprocessableEntity, apiError{OK: false, Code: "case_rejected"})
 			return

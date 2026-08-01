@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -13,11 +15,14 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/avivsinai/snagline/internal/securefile"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/google/uuid"
 )
@@ -31,8 +36,10 @@ const (
 	// Stock Buzz admits events only inside its pinned +/-15-minute window.
 	// Staying one minute inside that boundary avoids a write that can cross
 	// the relay cutoff while preserving an immutable prepared event.
-	stockPublishHorizon    = 14 * time.Minute
-	stockResolveEventLimit = 2
+	stockPublishHorizon       = 14 * time.Minute
+	stockResolveEventLimit    = 2
+	stockMaxNIPOAAuthTagBytes = 1024
+	stockMaxCAPEMBytes        = 1 << 20
 )
 
 var (
@@ -50,6 +57,8 @@ var (
 type StockRelayConfig struct {
 	RelayURL                  string
 	Signer                    DigestSigner
+	NIPOAAuthTagFile          string
+	TLSCAFile                 string
 	HTTPClient                *http.Client
 	Clock                     func() time.Time
 	AllowInsecureHTTPForTests bool
@@ -65,6 +74,7 @@ type StockRelayClient struct {
 	httpBase     *url.URL
 	signer       DigestSigner
 	signerPubKey string
+	nipOAAuthTag string
 	clock        func() time.Time
 }
 
@@ -86,10 +96,19 @@ func NewStockRelayClient(config StockRelayConfig) (*StockRelayClient, error) {
 	if _, err := schnorr.ParsePubKey(publicKeyBytes); err != nil {
 		return nil, errors.New("collab buzz: relay signer pubkey is invalid")
 	}
+	authTag, err := loadStockNIPOAAuthTagFile(config.NIPOAAuthTagFile, publicKey)
+	if err != nil {
+		return nil, err
+	}
 
 	var httpClient http.Client
 	if config.HTTPClient != nil {
 		httpClient = *config.HTTPClient
+	}
+	if root.Scheme == "https" {
+		if err := configureStockTLS(&httpClient, config.TLSCAFile); err != nil {
+			return nil, err
+		}
 	}
 	if httpClient.Timeout <= 0 || httpClient.Timeout > stockRequestTimeout {
 		httpClient.Timeout = stockRequestTimeout
@@ -109,8 +128,122 @@ func NewStockRelayClient(config StockRelayConfig) (*StockRelayClient, error) {
 		httpBase:     root,
 		signer:       config.Signer,
 		signerPubKey: publicKey,
+		nipOAAuthTag: authTag,
 		clock:        clock,
 	}, nil
+}
+
+func configureStockTLS(client *http.Client, caFile string) error {
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		return errors.New("collab buzz: TLS CA file is invalid")
+	}
+	if caFile != "" {
+		if !filepath.IsAbs(caFile) {
+			return errors.New("collab buzz: TLS CA file is invalid")
+		}
+		caPEM, err := securefile.ReadRegularBounded(caFile, stockMaxCAPEMBytes)
+		if err != nil || !roots.AppendCertsFromPEM(caPEM) {
+			return errors.New("collab buzz: TLS CA file is invalid")
+		}
+	}
+	var transport *http.Transport
+	switch configured := client.Transport.(type) {
+	case nil:
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	case *http.Transport:
+		transport = configured.Clone()
+	default:
+		return errors.New("collab buzz: TLS transport is invalid")
+	}
+	tlsConfig := &tls.Config{}
+	if transport.TLSClientConfig != nil {
+		if transport.TLSClientConfig.InsecureSkipVerify ||
+			(transport.TLSClientConfig.MaxVersion != 0 && transport.TLSClientConfig.MaxVersion < tls.VersionTLS13) {
+			return errors.New("collab buzz: TLS transport is invalid")
+		}
+		tlsConfig = transport.TLSClientConfig.Clone()
+	}
+	tlsConfig.MinVersion = tls.VersionTLS13
+	tlsConfig.RootCAs = roots
+	transport.TLSClientConfig = tlsConfig
+	client.Transport = transport
+	return nil
+}
+
+func loadStockNIPOAAuthTagFile(path, agentPubKey string) (string, error) {
+	fail := func() (string, error) {
+		return "", errors.New("collab buzz: NIP-OA auth tag file is invalid")
+	}
+	raw, err := securefile.ReadPrivateBounded(path, stockMaxNIPOAAuthTagBytes)
+	if err != nil || len(raw) == 0 || !utf8.Valid(raw) {
+		return fail()
+	}
+	if err := validateStockJSON(raw); err != nil {
+		return fail()
+	}
+	var parts []string
+	if err := json.Unmarshal(raw, &parts); err != nil || len(parts) != 4 || parts[0] != "auth" {
+		return fail()
+	}
+	canonical, err := marshalStockJSON(parts)
+	if err != nil || !bytes.Equal(raw, canonical) {
+		return fail()
+	}
+	ownerRaw, err := decodeStockHex(parts[1], schnorr.PubKeyBytesLen, "NIP-OA owner pubkey")
+	if err != nil || parts[1] == agentPubKey {
+		return fail()
+	}
+	owner, err := schnorr.ParsePubKey(ownerRaw)
+	if err != nil || validateStockNIPOAConditions(parts[2]) != nil {
+		return fail()
+	}
+	signatureRaw, err := decodeStockHex(parts[3], schnorr.SignatureSize, "NIP-OA signature")
+	if err != nil {
+		return fail()
+	}
+	signature, err := schnorr.ParseSignature(signatureRaw)
+	if err != nil {
+		return fail()
+	}
+	digest := sha256.Sum256([]byte("nostr:agent-auth:" + agentPubKey + ":" + parts[2]))
+	if !signature.Verify(digest[:], owner) {
+		return fail()
+	}
+	return string(raw), nil
+}
+
+func validateStockNIPOAConditions(conditions string) error {
+	if conditions == "" {
+		return nil
+	}
+	for _, clause := range strings.Split(conditions, "&") {
+		var value string
+		var maximum uint64
+		switch {
+		case strings.HasPrefix(clause, "kind="):
+			value, maximum = strings.TrimPrefix(clause, "kind="), 65535
+		case strings.HasPrefix(clause, "created_at<"):
+			value, maximum = strings.TrimPrefix(clause, "created_at<"), 4294967295
+		case strings.HasPrefix(clause, "created_at>"):
+			value, maximum = strings.TrimPrefix(clause, "created_at>"), 4294967295
+		default:
+			return errors.New("invalid NIP-OA condition")
+		}
+		if value == "" || (len(value) > 1 && value[0] == '0') {
+			return errors.New("invalid NIP-OA condition")
+		}
+		for _, digit := range value {
+			if digit < '0' || digit > '9' {
+				return errors.New("invalid NIP-OA condition")
+			}
+		}
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || parsed > maximum {
+			return errors.New("invalid NIP-OA condition")
+		}
+	}
+	return nil
 }
 
 func parseStockRelayRoot(raw string, allowHTTPForTests bool) (*url.URL, error) {
@@ -386,6 +519,7 @@ func (c *StockRelayClient) post(ctx context.Context, path string, body []byte, w
 		return nil, 0, "", false, errors.New("collab buzz: build relay request failed")
 	}
 	request.Header.Set("Authorization", authorization)
+	request.Header.Set("x-auth-tag", c.nipOAAuthTag)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	if stockDeadlineReached(c.clock().UTC(), writeDeadline) {

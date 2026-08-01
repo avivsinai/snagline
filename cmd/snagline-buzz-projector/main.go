@@ -45,6 +45,8 @@ type projectorConfig struct {
 	ProjectionKeyFile   string            `json:"projection_key_file"`
 	RelayURL            string            `json:"relay_url"`
 	PrivateKeyFile      string            `json:"buzz_private_key_file"`
+	NIPOAAuthTagFile    string            `json:"buzz_nip_oa_auth_tag_file"`
+	TLSCAFile           string            `json:"buzz_tls_ca_file"`
 	RegistryRootKeyID   string            `json:"registry_root_key_id"`
 	RegistryRootKeyFile string            `json:"registry_root_public_key_file"`
 	DomainChannels      map[string]string `json:"domain_channels"`
@@ -128,8 +130,10 @@ func runConfigured(parent context.Context, settings projectorConfig) error {
 		return errors.New("buzz projector authority is unavailable")
 	}
 	relay, err := projectorbuzz.NewStockRelayClient(projectorbuzz.StockRelayConfig{
-		RelayURL: settings.RelayURL,
-		Signer:   signer,
+		RelayURL:         settings.RelayURL,
+		Signer:           signer,
+		NIPOAAuthTagFile: settings.NIPOAAuthTagFile,
+		TLSCAFile:        settings.TLSCAFile,
 	})
 	if err != nil {
 		return errors.New("buzz projector relay is unavailable")
@@ -253,7 +257,9 @@ func (settings *projectorConfig) validate() error {
 	requireText := func(value string) bool { return value != "" && value == strings.TrimSpace(value) }
 	if !requireText(settings.Tenant) || !requireText(settings.PostgresDSN) || !requireText(settings.AuthorityID) ||
 		!filepath.IsAbs(settings.ProjectionStatePath) || !filepath.IsAbs(settings.ProjectionKeyFile) ||
-		!filepath.IsAbs(settings.PrivateKeyFile) || !requireText(settings.RegistryRootKeyID) || !filepath.IsAbs(settings.RegistryRootKeyFile) || !filepath.IsAbs(settings.OpsSocket) || settings.OpsSocket != filepath.Clean(settings.OpsSocket) || len(settings.DomainChannels) == 0 ||
+		!filepath.IsAbs(settings.PrivateKeyFile) || !filepath.IsAbs(settings.NIPOAAuthTagFile) ||
+		(settings.TLSCAFile != "" && !filepath.IsAbs(settings.TLSCAFile)) ||
+		!requireText(settings.RegistryRootKeyID) || !filepath.IsAbs(settings.RegistryRootKeyFile) || !filepath.IsAbs(settings.OpsSocket) || settings.OpsSocket != filepath.Clean(settings.OpsSocket) || len(settings.DomainChannels) == 0 ||
 		settings.BatchSize < 1 || settings.BatchSize > 1000 {
 		return errors.New("buzz projector config is invalid")
 	}

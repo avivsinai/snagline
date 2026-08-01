@@ -20,10 +20,10 @@ import (
 )
 
 type dispatcherRuntimeConfig struct {
-	DescriptorPath, CaseID, CaseCommitment, Text          string
-	Tenant, PrincipalID, AuthorKeyID                      string
-	DBPath, DBKey, ControlURL, TLSCert, TLSKey, ControlCA string
-	EnvelopeTTL                                           time.Duration
+	DescriptorPath, CaseID, CaseCommitment, Text, PublicSummary string
+	Tenant, PrincipalID, AuthorKeyID                            string
+	DBPath, DBKey, ControlURL, TLSCert, TLSKey, ControlCA       string
+	EnvelopeTTL                                                 time.Duration
 }
 
 func parseDispatcherRuntimeConfig(args []string) (dispatcherRuntimeConfig, error) {
@@ -33,6 +33,7 @@ func parseDispatcherRuntimeConfig(args []string) (dispatcherRuntimeConfig, error
 	caseID := flags.String("case-id", "", "case ID")
 	commitment := flags.String("case-commitment", "", "exact committed case commitment")
 	text := flags.String("text", "", "inert advice text")
+	publicSummary := flags.String("public-summary", "", "explicit public advice summary")
 	tenant := flags.String("tenant", envDispatcher("SNAGLINE_DISPATCHER_TENANT", ""), "SSP tenant")
 	principal := flags.String("principal-id", envDispatcher("SNAGLINE_DISPATCHER_PRINCIPAL_ID", ""), "certificate-bound dispatcher principal")
 	author := flags.String("author-key-id", envDispatcher("SNAGLINE_DISPATCHER_AUTHOR_KEY_ID", ""), "registered advice key ID")
@@ -46,12 +47,12 @@ func parseDispatcherRuntimeConfig(args []string) (dispatcherRuntimeConfig, error
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return dispatcherRuntimeConfig{}, errors.New("invalid dispatcher flags")
 	}
-	config := dispatcherRuntimeConfig{DescriptorPath: *descriptor, CaseID: *caseID, CaseCommitment: *commitment, Text: *text, Tenant: *tenant, PrincipalID: *principal, AuthorKeyID: *author, DBPath: *dbPath, DBKey: *dbKey, ControlURL: *controlURL, TLSCert: *tlsCert, TLSKey: *tlsKey, ControlCA: *controlCA, EnvelopeTTL: *ttl}
+	config := dispatcherRuntimeConfig{DescriptorPath: *descriptor, CaseID: *caseID, CaseCommitment: *commitment, Text: *text, PublicSummary: *publicSummary, Tenant: *tenant, PrincipalID: *principal, AuthorKeyID: *author, DBPath: *dbPath, DBKey: *dbKey, ControlURL: *controlURL, TLSCert: *tlsCert, TLSKey: *tlsKey, ControlCA: *controlCA, EnvelopeTTL: *ttl}
 	return config, config.validate()
 }
 
 func (config dispatcherRuntimeConfig) validate() error {
-	if dispatcherBlank(config.DescriptorPath, config.CaseID, config.CaseCommitment, config.Text, config.Tenant, config.PrincipalID, config.AuthorKeyID, config.DBPath, config.DBKey, config.ControlURL, config.TLSCert, config.TLSKey, config.ControlCA) || !dispatcherCommitment(config.CaseCommitment) || config.EnvelopeTTL <= 0 || config.EnvelopeTTL > 24*time.Hour {
+	if dispatcherBlank(config.DescriptorPath, config.CaseID, config.CaseCommitment, config.Text, config.PublicSummary, config.Tenant, config.PrincipalID, config.AuthorKeyID, config.DBPath, config.DBKey, config.ControlURL, config.TLSCert, config.TLSKey, config.ControlCA) || !dispatcherCommitment(config.CaseCommitment) || config.EnvelopeTTL <= 0 || config.EnvelopeTTL > 24*time.Hour {
 		return errors.New("missing or unbounded dispatcher configuration")
 	}
 	for _, path := range []string{config.DescriptorPath, config.DBPath, config.DBKey, config.TLSCert, config.TLSKey, config.ControlCA} {
@@ -79,7 +80,7 @@ func runDispatcher(ctx context.Context, config dispatcherRuntimeConfig, stdout i
 		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
 	}
 	defer db.Close()
-	result, err := finalizer.FinalizeAdvice(ctx, edge.FinalizeAdviceRequest{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text})
+	result, err := finalizer.FinalizeAdvice(ctx, edge.FinalizeAdviceRequest{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary})
 	if errors.Is(err, edge.ErrAlreadyPending) {
 		result, err = finalizer.RetryAdvice(ctx, config.CaseID)
 	}

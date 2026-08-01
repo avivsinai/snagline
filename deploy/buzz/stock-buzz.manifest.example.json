@@ -1,5 +1,5 @@
 {
-  "schema": "snagline.stock-buzz.deployment.v1",
+  "schema": "snagline.stock-buzz.deployment.v2",
   "stock_buzz": {
     "repository": "https://github.com/block/buzz",
     "tag": "v0.5.2",
@@ -10,40 +10,74 @@
     "url": "wss://buzz.example.invalid",
     "require_membership": true,
     "require_nip98": true,
-    "owner_pubkey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "relay_private_key_secret_ref": "secret://snagline/buzz/relay-private-key"
+    "allow_nip_oa_auth": true,
+    "owner_pubkey": "REPLACE_WITH_RELAY_OWNER_NOSTR_PUBKEY",
+    "relay_private_key_secret_key_ref": {
+      "name": "snagline-buzz-relay",
+      "key": "private-key"
+    }
   },
   "identities": {
+    "operator": {
+      "kind": "human",
+      "pubkey": "REPLACE_WITH_OPERATOR_NOSTR_PUBKEY",
+      "display_name": "Example Operator"
+    },
     "projector": {
-      "pubkey": "1111111111111111111111111111111111111111111111111111111111111111",
-      "private_key_secret_ref": "secret://snagline/buzz/projector-private-key"
+      "kind": "agent",
+      "pubkey": "REPLACE_WITH_PROJECTOR_NOSTR_PUBKEY",
+      "private_key_secret_key_ref": {"name": "snagline-buzz-projector", "key": "private-key"},
+      "nip_oa_auth_tag_secret_key_ref": {"name": "snagline-buzz-projector", "key": "nip-oa-auth-tag"},
+      "managed_by": "operator",
+      "owner_pubkey": "REPLACE_WITH_OPERATOR_NOSTR_PUBKEY",
+      "profile": {
+        "name": "Snagline Projector - operated by Example Operator",
+        "display_name": "Snagline Projector (operated by Example Operator)"
+      }
     },
     "specialist": {
-      "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
-      "private_key_secret_ref": "secret://snagline/buzz/specialist-private-key"
+      "kind": "agent",
+      "pubkey": "REPLACE_WITH_SPECIALIST_NOSTR_PUBKEY",
+      "private_key_secret_key_ref": {"name": "snagline-buzz-specialist", "key": "private-key"},
+      "nip_oa_auth_tag_secret_key_ref": {"name": "snagline-buzz-specialist", "key": "nip-oa-auth-tag"},
+      "managed_by": "operator",
+      "owner_pubkey": "REPLACE_WITH_OPERATOR_NOSTR_PUBKEY",
+      "profile": {
+        "name": "Snagline Specialist - operated by Example Operator",
+        "display_name": "Snagline Specialist (operated by Example Operator)"
+      }
     },
     "dispatcher": {
-      "pubkey": "3333333333333333333333333333333333333333333333333333333333333333",
-      "private_key_secret_ref": "secret://snagline/buzz/dispatcher-private-key",
+      "kind": "agent",
+      "pubkey": "REPLACE_WITH_DISPATCHER_NOSTR_PUBKEY",
+      "private_key_secret_key_ref": {"name": "snagline-buzz-dispatcher", "key": "private-key"},
+      "nip_oa_auth_tag_secret_key_ref": {"name": "snagline-buzz-dispatcher", "key": "nip-oa-auth-tag"},
+      "managed_by": "operator",
+      "owner_pubkey": "REPLACE_WITH_OPERATOR_NOSTR_PUBKEY",
+      "profile": {
+        "name": "Snagline Dispatcher - operated by Example Operator",
+        "display_name": "Snagline Dispatcher (operated by Example Operator)"
+      },
       "mcp_command": "/opt/snagline/bin/dispatcher-mcp"
     }
   },
   "channels": [
     {
       "id": "123e4567-e89b-42d3-a456-426614174000",
-      "visibility": "private",
-      "members": [
-        "1111111111111111111111111111111111111111111111111111111111111111",
-        "2222222222222222222222222222222222222222222222222222222222222222",
-        "3333333333333333333333333333333333333333333333333333333333333333"
-      ]
+      "type": "forum",
+      "visibility": "open"
     }
   ],
+  "official_channel_allowlists": {
+    "projector": ["123e4567-e89b-42d3-a456-426614174000"],
+    "specialist": ["123e4567-e89b-42d3-a456-426614174000"],
+    "dispatcher": ["123e4567-e89b-42d3-a456-426614174000"]
+  },
   "external_dispatcher_tool_policy": {
     "allowed_tools": [
       "submit_inert_advice"
     ],
     "attestor_key_id": "REPLACE_WITH_EXTERNAL_POLICY_ATTESTOR_KEY_ID",
-    "attestor_public_key": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    "attestor_public_key": "REPLACE_WITH_EXTERNAL_POLICY_ATTESTOR_ED25519_PUBLIC_KEY"
   }
 }

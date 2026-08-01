@@ -22,7 +22,7 @@ func TestOpenCasePersistsExactSignedBytesBeforeGatewaySubmit(t *testing.T) {
 	svc := newEdgeService(t, store, gateway)
 
 	result, err := svc.OpenCase(context.Background(), OpenCaseRequest{
-		CaseID: "case-1", Domain: "support", Summary: "Need bounded help", ContextManifest: digest("a"),
+		CaseID: "case-1", Domain: "support", Summary: "Confidential case detail", PublicSummary: "Need bounded help", ContextManifest: digest("a"),
 		Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")},
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestOpenCaseLostResponseRetriesExactBytesAndDoesNotClaimCommitted(t *testin
 	store := &fakeStore{}
 	gateway := &fakeGateway{store: store, err: errors.New("lost response")}
 	svc := newEdgeService(t, store, gateway)
-	request := OpenCaseRequest{CaseID: "case-1", Domain: "support", Summary: "Need bounded help", ContextManifest: digest("a"), Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")}}
+	request := OpenCaseRequest{CaseID: "case-1", Domain: "support", Summary: "Confidential case detail", PublicSummary: "Need bounded help", ContextManifest: digest("a"), Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")}}
 
 	first, err := svc.OpenCase(context.Background(), request)
 	if err == nil {
@@ -103,7 +103,7 @@ func TestOpenCaseRejectsUnboundedInputBeforeSpoolingOrSubmitting(t *testing.T) {
 	svc := newEdgeService(t, store, gateway)
 
 	_, err := svc.OpenCase(context.Background(), OpenCaseRequest{
-		CaseID: "case-1", Domain: "support", Summary: strings.Repeat("x", 4097), ContextManifest: digest("a"),
+		CaseID: "case-1", Domain: "support", Summary: strings.Repeat("x", 4097), PublicSummary: "bounded public summary", ContextManifest: digest("a"),
 		Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")},
 	})
 	if err == nil {
@@ -121,7 +121,7 @@ func TestFinalizeAdviceSignsOnlyExactCaseBindingAndNoRouteFields(t *testing.T) {
 	gateway := &fakeGateway{store: store}
 	finalizer := newFinalizer(t, store, gateway)
 
-	result, err := finalizer.FinalizeAdvice(context.Background(), FinalizeAdviceRequest{CaseID: "case-1", CaseCommitment: digest("c"), Text: "Use the bounded next step."})
+	result, err := finalizer.FinalizeAdvice(context.Background(), FinalizeAdviceRequest{CaseID: "case-1", CaseCommitment: digest("c"), Text: "Confidential advice detail.", PublicSummary: "Use the bounded next step."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +139,8 @@ func TestFinalizeAdviceSignsOnlyExactCaseBindingAndNoRouteFields(t *testing.T) {
 	if err := json.Unmarshal(envelope.Body, &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 2 || body["case_commitment"] != digest("c") || body["text"] != "Use the bounded next step." {
-		t.Fatalf("advice body = %#v, want exact case_commitment + text", body)
+	if len(body) != 3 || body["case_commitment"] != digest("c") || body["text"] != "Confidential advice detail." || body["public_summary"] != "Use the bounded next step." {
+		t.Fatalf("advice body = %#v, want exact case_commitment + confidential text + public summary", body)
 	}
 	for _, forbidden := range []string{"domain", "target_edge_id", "issuer_edge_id", "buzz"} {
 		if _, ok := body[forbidden]; ok {
@@ -153,7 +153,7 @@ func TestFinalizeAdviceLostResponseRetriesExactBytesAndNeverCreatesSecondAdvice(
 	store := &fakeStore{cases: map[string]CaseRecord{"case-1": {CaseID: "case-1", Commitment: digest("c"), Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")}, ExpiresAt: edgeNow.Add(time.Hour), Committed: true}}}
 	gateway := &fakeGateway{store: store, err: errors.New("lost response")}
 	finalizer := newFinalizer(t, store, gateway)
-	request := FinalizeAdviceRequest{CaseID: "case-1", CaseCommitment: digest("c"), Text: "Use the bounded next step."}
+	request := FinalizeAdviceRequest{CaseID: "case-1", CaseCommitment: digest("c"), Text: "Confidential advice detail.", PublicSummary: "Use the bounded next step."}
 
 	first, err := finalizer.FinalizeAdvice(context.Background(), request)
 	if err == nil || first.AcceptedRemote || len(store.acceptedAdvice) != 0 {

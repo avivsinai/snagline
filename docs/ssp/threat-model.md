@@ -13,7 +13,7 @@ accept advice, authorize a key, or cause an effect.
 | Wrong route or stale edge | Exact registry pair, epoch, route family, edge principal, and positive generation matching. |
 | Advice becomes an action | Advice is inert display data. No component may translate it into a provider action. |
 | Transport metadata is trusted | Do not use Buzz membership, event IDs, ACKs, channels, or JetStream sequence/consumer state as identity or authority. |
-| Data disclosure | Allowlist and redact case/advice content; keep restricted provider/session data outside SSP and projections. |
+| Data disclosure | Require a separately authored `public_summary`; project only that exact field, never confidential case `summary` or advice `text`; keep restricted provider/session data outside SSP and projections. |
 | Local state replacement | Run each edge and projector under a dedicated service UID. Their current-user-owned `0700` SQLite namespaces assume other same-UID processes are trusted. |
 
 An inbound delivery that cannot be authenticated and bound to current Postgres

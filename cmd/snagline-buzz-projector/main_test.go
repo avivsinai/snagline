@@ -14,7 +14,7 @@ func TestParseConfigRejectsUnknownFieldsAndUnsafeRelay(t *testing.T) {
 	base := `{
 "tenant":"tenant-1","postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system","authority_id":"buzz-projector-1",
 "projection_state_path":"/var/lib/snagline/buzz.db","projection_key_file":"/run/secrets/projection.key",
-"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key",
+"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key","buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag","buzz_tls_ca_file":"/run/config/buzz-ca.pem",
 "registry_root_key_id":"registry-root-1","registry_root_public_key_file":"/run/keys/registry-root-1.pem","domain_channels":{"support.example":"` + channelID + `"},
 "poll_interval":"1s","batch_size":10,"request_timeout":"2s","backoff_initial":"100ms","backoff_max":"1s","ops_socket":"/run/snagline/projector.ops.sock"
 }`
@@ -25,12 +25,23 @@ func TestParseConfigRejectsUnknownFieldsAndUnsafeRelay(t *testing.T) {
 	if settings.postgresPoolConfig == nil {
 		t.Fatal("projector configuration did not retain its validated PostgreSQL connection plan")
 	}
+	if settings.TLSCAFile != "/run/config/buzz-ca.pem" {
+		t.Fatalf("TLS CA file = %q", settings.TLSCAFile)
+	}
+	withoutCustomCA := strings.Replace(base, `,"buzz_tls_ca_file":"/run/config/buzz-ca.pem"`, "", 1)
+	settings, err = parseConfig([]byte(withoutCustomCA))
+	if err != nil || settings.TLSCAFile != "" {
+		t.Fatalf("system WebPKI config = (%q, %v), want omitted custom CA", settings.TLSCAFile, err)
+	}
 	for _, mutated := range []string{
 		strings.Replace(base, `"postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system"`, `"postgres_dsn":"postgres://projector:secret@db.example/projector"`, 1),
 		strings.Replace(base, `"relay_url":"https://buzz.example"`, `"relay_url":"http://buzz.example"`, 1),
 		strings.Replace(base, `"relay_url":"https://buzz.example"`, `"relay_url":"https://"`, 1),
 		strings.Replace(base, `"domain_channels":{"support.example":"`+channelID+`"}`, `"domain_channels":{"support.example":"`+channelID+`"},"unknown":true`, 1),
 		strings.Replace(base, `"domain_channels":{"support.example":"`+channelID+`"}`, `"domain_channels":{"support.example":"`+channelID+`"},"author_keys":{"edge-key-1":"/run/keys/edge.pem"}`, 1),
+		strings.Replace(base, `,"buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag"`, "", 1),
+		strings.Replace(base, `"buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag"`, `"buzz_nip_oa_auth_tag_file":"buzz.auth-tag"`, 1),
+		strings.Replace(base, `"buzz_tls_ca_file":"/run/config/buzz-ca.pem"`, `"buzz_tls_ca_file":"buzz-ca.pem"`, 1),
 		strings.Replace(base, `"domain_channels":{"support.example":"`+channelID+`"}`, `"domain_channels":{"support.example":""}`, 1),
 		strings.Replace(base, channelID, strings.ToUpper(channelID), 1),
 		strings.Replace(base, channelID, "{"+channelID+"}", 1),
@@ -45,7 +56,7 @@ func TestParseConfigRejectsUnboundedProjectorTiming(t *testing.T) {
 	const base = `{
 "tenant":"tenant-1","postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system","authority_id":"buzz-projector-1",
 "projection_state_path":"/var/lib/snagline/buzz.db","projection_key_file":"/run/secrets/projection.key",
-"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key",
+"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key","buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag","buzz_tls_ca_file":"/run/config/buzz-ca.pem",
 "registry_root_key_id":"registry-root-1","registry_root_public_key_file":"/run/keys/registry-root-1.pem","domain_channels":{"support.example":"11111111-1111-1111-1111-111111111111"},
 "poll_interval":"1s","batch_size":10,"request_timeout":"2s","backoff_initial":"100ms","backoff_max":"1s","ops_socket":"/run/snagline/projector.ops.sock"
 }`
@@ -75,7 +86,7 @@ func TestParseConfigRequiresAbsoluteOpsSocket(t *testing.T) {
 	config := []byte(`{
 "tenant":"tenant-1","postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system","authority_id":"buzz-projector-1",
 "projection_state_path":"/var/lib/snagline/buzz.db","projection_key_file":"/run/secrets/projection.key",
-"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key",
+"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key","buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag","buzz_tls_ca_file":"/run/config/buzz-ca.pem",
 "registry_root_key_id":"registry-root-1","registry_root_public_key_file":"/run/keys/registry-root-1.pem","domain_channels":{"support.example":"11111111-1111-1111-1111-111111111111"},
 "poll_interval":"1s","batch_size":10,"request_timeout":"2s","backoff_initial":"100ms","backoff_max":"1s","ops_socket":"/run/snagline/projector.ops.sock"
 }`)
@@ -95,7 +106,7 @@ func TestParseConfigRejectsRelativePrivateKeyPath(t *testing.T) {
 	config := `{
 "tenant":"tenant-1","postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system","authority_id":"buzz-projector-1",
 "projection_state_path":"/var/lib/snagline/buzz.db","projection_key_file":"/run/secrets/projection.key",
-"relay_url":"https://buzz.example","buzz_private_key_file":"buzz.key",
+"relay_url":"https://buzz.example","buzz_private_key_file":"buzz.key","buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag","buzz_tls_ca_file":"/run/config/buzz-ca.pem",
 "registry_root_key_id":"registry-root-1","registry_root_public_key_file":"/run/keys/registry-root-1.pem","domain_channels":{"support.example":"11111111-1111-1111-1111-111111111111"},
 "poll_interval":"1s","batch_size":10,"request_timeout":"2s","backoff_initial":"100ms","backoff_max":"1s"
 }`
@@ -108,7 +119,7 @@ func TestLoadConfigRequiresPrivateRegularFile(t *testing.T) {
 	config := []byte(`{
 "tenant":"tenant-1","postgres_dsn":"postgresql://projector:secret@db.example:5432/projector?sslmode=verify-full&sslrootcert=system","authority_id":"buzz-projector-1",
 "projection_state_path":"/var/lib/snagline/buzz.db","projection_key_file":"/run/secrets/projection.key",
-"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key",
+"relay_url":"https://buzz.example","buzz_private_key_file":"/run/secrets/buzz.key","buzz_nip_oa_auth_tag_file":"/run/secrets/buzz.auth-tag","buzz_tls_ca_file":"/run/config/buzz-ca.pem",
 "registry_root_key_id":"registry-root-1","registry_root_public_key_file":"/run/keys/registry-root-1.pem","domain_channels":{"support.example":"11111111-1111-1111-1111-111111111111"},
 "poll_interval":"1s","batch_size":10,"request_timeout":"2s","backoff_initial":"100ms","backoff_max":"1s","ops_socket":"/run/snagline/projector.ops.sock"
 }`)

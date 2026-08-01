@@ -366,7 +366,7 @@ func (f controlFixture) caseRaw(t *testing.T, caseID, envelopeID string) []byte 
 
 func (f controlFixture) caseRawAt(t *testing.T, caseID, envelopeID string, signedAt, emittedAt, expiresAt time.Time) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"help","context_manifest":"` + digest("manifest") + `"}`)
+	body := json.RawMessage(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential help","public_summary":"help","context_manifest":"` + digest("manifest") + `"}`)
 	raw, err := ssp.Sign(ssp.Envelope{Schema: ssp.FamilyCase, ID: envelopeID, CaseID: caseID, EmittedAt: emittedAt.Format(time.RFC3339), ExpiresAt: expiresAt.Format(time.RFC3339), RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: f.authority.registry.Commitment, AuthorKeyID: "edge-key", SignatureAlg: "ed25519", Body: body}, f.edgeKey, signedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func (f controlFixture) caseRawAt(t *testing.T, caseID, envelopeID string, signe
 
 func (f controlFixture) adviceRaw(t *testing.T, caseID, envelopeID, caseCommitment string) []byte {
 	t.Helper()
-	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"bounded advice"}`)
+	body := json.RawMessage(`{"case_commitment":"` + caseCommitment + `","text":"confidential advice detail","public_summary":"bounded advice"}`)
 	return sign(t, ssp.Envelope{Schema: ssp.FamilyAdvice, ID: envelopeID, CaseID: caseID, EmittedAt: controlNow.Format(time.RFC3339), ExpiresAt: controlNow.Add(time.Hour).Format(time.RFC3339), RoutingEpoch: 7, RegistryRevision: 12, RegistryHash: f.authority.registry.Commitment, AuthorKeyID: "advice-key", SignatureAlg: "ed25519", Body: body}, f.adviceKey)
 }
 

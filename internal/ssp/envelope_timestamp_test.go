@@ -68,7 +68,7 @@ func TestEnvelopeTimestampBoundariesFromCorpus(t *testing.T) {
 			RegistryHash:     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 			AuthorKeyID:      "timestamp-boundary-key",
 			SignatureAlg:     "ed25519",
-			Body:             []byte(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"timestamp boundary","context_manifest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}`),
+			Body:             []byte(`{"domain":"support","issuer_edge_id":"edge-1","issuer_edge_generation":1,"summary":"confidential timestamp detail","public_summary":"timestamp boundary","context_manifest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}`),
 		}
 		switch tc.Role {
 		case "envelope.emitted_at":

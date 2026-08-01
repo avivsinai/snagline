@@ -274,19 +274,21 @@ type caseBody struct {
 	IssuerEdgeID         string `json:"issuer_edge_id"`
 	IssuerEdgeGeneration int64  `json:"issuer_edge_generation"`
 	Summary              string `json:"summary"`
+	PublicSummary        string `json:"public_summary"`
 	ContextManifest      string `json:"context_manifest"`
 }
 
 type adviceBody struct {
 	CaseCommitment string `json:"case_commitment"`
 	Text           string `json:"text"`
+	PublicSummary  string `json:"public_summary"`
 }
 
 func (p *Projector) prepareAndPublishCase(ctx context.Context, state *State, record CommittedFact, envelope ssp.Envelope) (bool, error) {
 	var body caseBody
-	if err := decodeExactBody(envelope.Body, &body); err != nil || body.Domain == "" || body.IssuerEdgeGeneration <= 0 {
+	if err := decodeExactBody(envelope.Body, &body); err != nil || body.Domain == "" || body.IssuerEdgeGeneration <= 0 || body.Summary == "" || body.PublicSummary == "" {
 		if err == nil {
-			err = errors.New("case domain and positive issuer generation are required")
+			err = errors.New("case projection fields are required")
 		}
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, fmt.Errorf("collab buzz: decode case: %w", err)
@@ -299,7 +301,7 @@ func (p *Projector) prepareAndPublishCase(ctx context.Context, state *State, rec
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, fmt.Errorf("collab buzz: case channel: %w", err)
 	}
-	content, err := renderCard(envelope, record.Commitment, body.Summary, "")
+	content, err := renderCard(envelope, record.Commitment, body.PublicSummary, "")
 	if err != nil {
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, err
@@ -328,9 +330,9 @@ func (p *Projector) prepareAndPublishCase(ctx context.Context, state *State, rec
 
 func (p *Projector) prepareAndPublishAdvice(ctx context.Context, state *State, record CommittedFact, envelope ssp.Envelope) (bool, error) {
 	var body adviceBody
-	if err := decodeExactBody(envelope.Body, &body); err != nil || body.Text == "" {
+	if err := decodeExactBody(envelope.Body, &body); err != nil || body.Text == "" || body.PublicSummary == "" {
 		if err == nil {
-			err = errors.New("advice text is required")
+			err = errors.New("advice projection fields are required")
 		}
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, fmt.Errorf("collab buzz: decode advice: %w", err)
@@ -353,7 +355,7 @@ func (p *Projector) prepareAndPublishAdvice(ctx context.Context, state *State, r
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, fmt.Errorf("collab buzz: advice channel: %w", err)
 	}
-	content, err := renderCard(envelope, record.Commitment, "", body.Text)
+	content, err := renderCard(envelope, record.Commitment, "", body.PublicSummary)
 	if err != nil {
 		state.recordFailure(record.Sequence, err, p.maxAttempts)
 		return false, err
