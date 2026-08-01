@@ -269,15 +269,18 @@ func TestApplyVerifiedRejectsConflictingBytesForAuthoritativeDelivery(t *testing
 		t.Fatalf("first=(%q,%v)", got, err)
 	}
 	delivery.Raw = []byte("different-authoritative-bytes")
-	if _, err := db.ApplyVerified(context.Background(), delivery, VerdictAccepted, "", p, now); err == nil {
-		t.Fatal("conflicting bytes accepted for the same authoritative delivery identity")
+	if got, err := db.ApplyVerified(context.Background(), delivery, VerdictAccepted, "", p, now); err != nil || got != ApplyIdentityConflict {
+		t.Fatalf("conflict=(%q,%v), want ApplyIdentityConflict", got, err)
 	}
 	state, err := db.DeliveryState(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastContiguousSeq != 1 || state.HighWatermark != 1 || state.Mode != DeliveryModeActive {
-		t.Fatalf("conflict changed delivery state: %+v", state)
+	if state.LastContiguousSeq != 1 || state.HighWatermark != 1 {
+		t.Fatalf("conflict advanced delivery sequence state: %+v", state)
+	}
+	if state.Mode != DeliveryModeReconciliationRequired || state.Reason != "delivery_identity_conflict" {
+		t.Fatalf("conflict is not visibly halted: %+v", state)
 	}
 }
 

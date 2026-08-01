@@ -54,6 +54,7 @@ const (
 	ProcessDuplicate              ProcessOutcome = "duplicate"
 	ProcessRetrying               ProcessOutcome = "retrying"
 	ProcessReconciliationRequired ProcessOutcome = "reconciliation_required"
+	ProcessIdentityConflict       ProcessOutcome = "identity_conflict"
 )
 
 var ErrConsumerHalted = errors.New("sspedge: journal consumer halted")
@@ -198,6 +199,9 @@ func (c *JournalConsumer) outcome(o ApplyOutcome) (ProcessOutcome, error) {
 	case ApplyReconciliationRequired:
 		c.halt()
 		return ProcessReconciliationRequired, nil
+	case ApplyIdentityConflict:
+		c.halt()
+		return ProcessIdentityConflict, nil
 	default:
 		return "", errors.New("sspedge: unknown apply outcome")
 	}
@@ -243,7 +247,7 @@ func (c *JournalConsumer) Reconcile(ctx context.Context, now time.Time) (Reconci
 		if err != nil {
 			return result, err
 		}
-		if o == ApplyReconciliationRequired || o == ApplyQuarantined {
+		if o == ApplyReconciliationRequired || o == ApplyQuarantined || o == ApplyIdentityConflict {
 			return result, errors.New("sspedge: reconciliation delivery halted")
 		}
 		result.Applied++

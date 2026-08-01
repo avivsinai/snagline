@@ -147,7 +147,7 @@ func newSQLCipherConnector(path string, databaseKey []byte) *sqlCipherConnector 
 	}
 }
 
-func (c *sqlCipherConnector) Connect(context.Context) (driver.Conn, error) {
+func (c *sqlCipherConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || len(c.key) != StoreKeyLength {
@@ -296,6 +296,10 @@ const (
 	ApplyQuarantined            ApplyOutcome = "quarantined"
 	ApplyDuplicate              ApplyOutcome = "duplicate"
 	ApplyReconciliationRequired ApplyOutcome = "reconciliation_required"
+	// ApplyIdentityConflict records that the authoritative carrier presented
+	// different bytes or subject for an already-recorded delivery sequence.
+	// The generation halts visibly; only authority reconciliation may resume it.
+	ApplyIdentityConflict ApplyOutcome = "identity_conflict"
 )
 
 type EdgeIdentity struct {
@@ -393,35 +397,32 @@ func (d *DB) applyVerified(ctx context.Context, delivery JournalDelivery, verdic
 		err = tx.QueryRowContext(ctx, `SELECT raw_sha256,subject FROM ssp_edge_deliveries WHERE tenant_id=? AND edge_id=? AND edge_generation=? AND delivery_seq=?`, identity.TenantID, identity.EdgeID, identity.Generation, delivery.DeliverySeq).Scan(&existing, &subject)
 		if err == nil {
 			if existing != rawHash || subject != delivery.Subject {
-				return "", errors.New("sspedge: authoritative delivery identity conflicts")
+				return haltAndCommitTx(ctx, tx, state, delivery.DeliverySeq, "delivery_identity_conflict", now, ApplyIdentityConflict)
 			}
 			return ApplyDuplicate, tx.Commit()
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return "", err
 		}
-		if err := requireReconciliationTx(ctx, tx, state, delivery.DeliverySeq, "missing_committed_delivery", now); err != nil {
-			return "", err
-		}
-		if err := tx.Commit(); err != nil {
-			return "", err
-		}
-		return ApplyReconciliationRequired, nil
+		return haltAndCommitTx(ctx, tx, state, delivery.DeliverySeq, "missing_committed_delivery", now, ApplyReconciliationRequired)
 	}
 	if delivery.DeliverySeq != state.LastContiguousSeq+1 || state.Mode == DeliveryModeReconciliationRequired && !allowReconciliation {
-		if err := requireReconciliationTx(ctx, tx, state, delivery.DeliverySeq, "delivery_sequence_gap", now); err != nil {
-			return "", err
-		}
-		if err := tx.Commit(); err != nil {
-			return "", err
-		}
-		return ApplyReconciliationRequired, nil
+		return haltAndCommitTx(ctx, tx, state, delivery.DeliverySeq, "delivery_sequence_gap", now, ApplyReconciliationRequired)
 	}
-	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT raw_sha256 FROM ssp_edge_deliveries WHERE tenant_id=? AND edge_id=? AND edge_generation=? AND delivery_seq=?`, identity.TenantID, identity.EdgeID, identity.Generation, delivery.DeliverySeq).Scan(&existing)
+	var existing, existingSubject string
+	err = tx.QueryRowContext(ctx, `SELECT raw_sha256,subject FROM ssp_edge_deliveries WHERE tenant_id=? AND edge_id=? AND edge_generation=? AND delivery_seq=?`, identity.TenantID, identity.EdgeID, identity.Generation, delivery.DeliverySeq).Scan(&existing, &existingSubject)
 	if err == nil {
-		if existing != rawHash {
-			return "", errors.New("sspedge: authoritative delivery has different bytes")
+		if existing != rawHash || existingSubject != delivery.Subject {
+			return haltAndCommitTx(ctx, tx, state, delivery.DeliverySeq, "delivery_identity_conflict", now, ApplyIdentityConflict)
+		}
+		if allowReconciliation {
+			// The recorded row is the committed evidence for this sequence.
+			// Authority reconciliation must advance a torn contiguous state
+			// through the exact recorded row without reapplying its
+			// projection, or the halt could never resume.
+			if err := advanceDeliveryStateTx(ctx, tx, identity, exists, delivery.DeliverySeq, now); err != nil {
+				return "", err
+			}
 		}
 		return ApplyDuplicate, tx.Commit()
 	}
@@ -448,12 +449,7 @@ func (d *DB) applyVerified(ctx context.Context, delivery JournalDelivery, verdic
 	if err != nil {
 		return "", err
 	}
-	if !exists {
-		_, err = tx.ExecContext(ctx, `INSERT INTO ssp_edge_delivery_state (tenant_id,edge_id,edge_generation,last_contiguous_seq,high_watermark,mode,reason,updated_at) VALUES (?,?,?,?,?,'active','',?)`, identity.TenantID, identity.EdgeID, identity.Generation, delivery.DeliverySeq, delivery.DeliverySeq, sqlTime(now))
-	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE ssp_edge_delivery_state SET last_contiguous_seq=?,high_watermark=MAX(high_watermark,?),updated_at=? WHERE tenant_id=? AND edge_id=? AND edge_generation=?`, delivery.DeliverySeq, delivery.DeliverySeq, sqlTime(now), identity.TenantID, identity.EdgeID, identity.Generation)
-	}
-	if err != nil {
+	if err := advanceDeliveryStateTx(ctx, tx, identity, exists, delivery.DeliverySeq, now); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -477,6 +473,30 @@ func requireReconciliationTx(ctx context.Context, tx *sql.Tx, state GenerationDe
 		high = observed
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO ssp_edge_delivery_state (tenant_id,edge_id,edge_generation,last_contiguous_seq,high_watermark,mode,reason,updated_at) VALUES (?,?,?,?,?,'reconciliation_required',?,?) ON CONFLICT(tenant_id,edge_id,edge_generation) DO UPDATE SET high_watermark=MAX(high_watermark,excluded.high_watermark),mode='reconciliation_required',reason=excluded.reason,updated_at=excluded.updated_at`, state.TenantID, state.EdgeID, state.Generation, state.LastContiguousSeq, high, reason, sqlTime(now))
+	return err
+}
+
+// haltAndCommitTx durably records the visible halt reason, commits, and maps
+// the halt to its apply outcome. Every halting branch of applyVerified goes
+// through here so the halt semantics cannot drift between branches.
+func haltAndCommitTx(ctx context.Context, tx *sql.Tx, state GenerationDeliveryState, observed int64, reason string, now time.Time, outcome ApplyOutcome) (ApplyOutcome, error) {
+	if err := requireReconciliationTx(ctx, tx, state, observed, reason, now); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return outcome, nil
+}
+
+// advanceDeliveryStateTx moves the contiguous delivery counter through seq
+// without touching mode or reason; resume decisions stay with reconciliation.
+func advanceDeliveryStateTx(ctx context.Context, tx *sql.Tx, id EdgeIdentity, exists bool, seq int64, now time.Time) error {
+	if !exists {
+		_, err := tx.ExecContext(ctx, `INSERT INTO ssp_edge_delivery_state (tenant_id,edge_id,edge_generation,last_contiguous_seq,high_watermark,mode,reason,updated_at) VALUES (?,?,?,?,?,'active','',?)`, id.TenantID, id.EdgeID, id.Generation, seq, seq, sqlTime(now))
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE ssp_edge_delivery_state SET last_contiguous_seq=?,high_watermark=MAX(high_watermark,?),updated_at=? WHERE tenant_id=? AND edge_id=? AND edge_generation=?`, seq, seq, sqlTime(now), id.TenantID, id.EdgeID, id.Generation)
 	return err
 }
 func (d *DB) RequireReconciliation(ctx context.Context, id EdgeIdentity, observed int64, reason string, now time.Time) error {
