@@ -1,0 +1,7 @@
+{
+  "binary": "/usr/local/bin/amq",
+  "root": "/var/lib/agent-message-queue",
+  "session": "REPLACE_WITH_SESSION",
+  "from": "REPLACE_WITH_FRONT_SENDER_HANDLE",
+  "to": "REPLACE_WITH_AGENT_RECIPIENT_HANDLE"
+}

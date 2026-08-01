@@ -1,0 +1,85 @@
+version: 2
+
+project_name: snagline
+
+# snagline-edge and snagline-dispatcher embed SQLCipher and therefore require
+# native CGO plus OpenSSL headers and libcrypto. GoReleaser Community cannot
+# merge native per-platform CGO builds, so those two commands intentionally
+# ship only for the Linux amd64 target built by the release runner. The first
+# release supports one exact Linux amd64 artifact set; the other commands stay
+# CGO-free so expanding that matrix later does not pull SQLCipher into them.
+builds:
+  - id: snagline-control
+    main: ./cmd/snagline-control
+    binary: snagline-control
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-delivery
+    main: ./cmd/snagline-delivery
+    binary: snagline-delivery
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-edge
+    main: ./cmd/snagline-edge
+    binary: snagline-edge
+    env:
+      - CGO_ENABLED=1
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-front
+    main: ./cmd/snagline-front
+    binary: snagline-front
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-dispatcher
+    main: ./cmd/snagline-dispatcher
+    binary: snagline-dispatcher
+    env:
+      - CGO_ENABLED=1
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-buzz-projector
+    main: ./cmd/snagline-buzz-projector
+    binary: snagline-buzz-projector
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-ssp-verify
+    main: ./cmd/snagline-ssp-verify
+    binary: snagline-ssp-verify
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+
+archives:
+  - id: portable-commands
+    ids:
+      - snagline-control
+      - snagline-delivery
+      - snagline-front
+      - snagline-buzz-projector
+      - snagline-ssp-verify
+    name_template: "snagline_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+  - id: edge-commands
+    ids:
+      - snagline-edge
+      - snagline-dispatcher
+    name_template: "snagline_edge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"

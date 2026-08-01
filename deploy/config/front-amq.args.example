@@ -1,0 +1,12 @@
+# Execute as the matching dedicated edge UID snagline-edge-EDGE_ID. The
+# private edge socket is intentionally inaccessible to every other UID.
+# The binding is a separate current-UID-owned private JSON file (mode 0600).
+# It pins the AMQ executable and lane; advice never chooses a recipient.
+snagline-front \
+  --mode amq \
+  --socket /run/snagline-edge-EDGE_ID/edge.sock \
+  --owner front-amq-EDGE_ID \
+  --lease 1m \
+  --operation-timeout 15s \
+  --limit 1 \
+  --amq-config /run/snagline-edge-EDGE_ID/amq-binding.json

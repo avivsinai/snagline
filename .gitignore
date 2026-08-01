@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go build and test output
+/bin/
+/build/
+/dist/
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+
+# Generated interpreter and crash artifacts
+__pycache__/
+*.py[cod]
+/core
+/core.*
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Local agent coordination state
+.agent-mail/
+.snagline/
+snagline.db
+snagline.db-*

@@ -1,0 +1,11 @@
+.git
+.github
+bin
+coverage.out
+coverage.html
+dist
+scratch
+tmp
+*.db
+*.log
+.DS_Store

@@ -1,0 +1,49 @@
+{
+  "schema": "snagline.stock-buzz.deployment.v1",
+  "stock_buzz": {
+    "repository": "https://github.com/block/buzz",
+    "tag": "v0.5.2",
+    "commit": "3e48f1b2365d326ee1c9582448d86a99b44ecd5d",
+    "relay_image": "registry.example.invalid/block/buzz-relay@sha256:REPLACE_WITH_A_REAL_64_HEX_DIGEST"
+  },
+  "relay": {
+    "url": "wss://buzz.example.invalid",
+    "require_membership": true,
+    "require_nip98": true,
+    "owner_pubkey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "relay_private_key_secret_ref": "secret://snagline/buzz/relay-private-key"
+  },
+  "identities": {
+    "projector": {
+      "pubkey": "1111111111111111111111111111111111111111111111111111111111111111",
+      "private_key_secret_ref": "secret://snagline/buzz/projector-private-key"
+    },
+    "specialist": {
+      "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+      "private_key_secret_ref": "secret://snagline/buzz/specialist-private-key"
+    },
+    "dispatcher": {
+      "pubkey": "3333333333333333333333333333333333333333333333333333333333333333",
+      "private_key_secret_ref": "secret://snagline/buzz/dispatcher-private-key",
+      "mcp_command": "/opt/snagline/bin/dispatcher-mcp"
+    }
+  },
+  "channels": [
+    {
+      "id": "123e4567-e89b-42d3-a456-426614174000",
+      "visibility": "private",
+      "members": [
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "3333333333333333333333333333333333333333333333333333333333333333"
+      ]
+    }
+  ],
+  "external_dispatcher_tool_policy": {
+    "allowed_tools": [
+      "submit_inert_advice"
+    ],
+    "attestor_key_id": "REPLACE_WITH_EXTERNAL_POLICY_ATTESTOR_KEY_ID",
+    "attestor_public_key": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  }
+}

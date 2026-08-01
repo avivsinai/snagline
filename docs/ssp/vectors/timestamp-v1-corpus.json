@@ -1,0 +1,119 @@
+{
+  "contract": "UTC-only calendar-valid years 0001-9999 in YYYY-MM-DDTHH:MM:SS form, with optional .1-to-.6 fractional digits and literal uppercase Z",
+  "roles": [
+    "envelope.emitted_at",
+    "envelope.expires_at",
+    "registry.key.not_before",
+    "registry.key.expires_at",
+    "registry.key.revoked_at",
+    "cli.now"
+  ],
+  "cases": [
+    {"name": "whole-second", "value": "2030-01-02T03:04:05Z", "valid": true},
+    {"name": "one-fractional-digit", "value": "2030-01-02T03:04:05.1Z", "valid": true},
+    {"name": "six-fractional-digits", "value": "2030-01-02T03:04:05.123456Z", "valid": true},
+    {"name": "seven-fractional-digits", "value": "2030-01-02T03:04:05.1234567Z", "valid": false},
+    {"name": "lowercase-t", "value": "2030-01-02t03:04:05Z", "valid": false},
+    {"name": "lowercase-z", "value": "2030-01-02T03:04:05z", "valid": false},
+    {"name": "comma-fraction", "value": "2030-01-02T03:04:05,1Z", "valid": false},
+    {"name": "zero-offset", "value": "2030-01-02T03:04:05+00:00", "valid": false},
+    {"name": "nonzero-offset", "value": "2030-01-02T03:04:05+05:30", "valid": false},
+    {"name": "missing-offset", "value": "2030-01-02T03:04:05", "valid": false},
+    {"name": "trailing-lf", "value": "2030-01-02T03:04:05Z\n", "valid": false},
+    {"name": "trailing-cr", "value": "2030-01-02T03:04:05Z\r", "valid": false},
+    {"name": "trailing-space", "value": "2030-01-02T03:04:05Z ", "valid": false},
+    {"name": "year-zero", "value": "0000-01-01T00:00:00Z", "valid": false},
+    {"name": "valid-leap-day", "value": "2000-02-29T23:59:59Z", "valid": true},
+    {"name": "invalid-non-leap-century-day", "value": "1900-02-29T23:59:59Z", "valid": false},
+    {"name": "invalid-calendar-date", "value": "2030-02-30T03:04:05Z", "valid": false}
+  ],
+  "schema_targets": [
+    {"family": "case-v1", "path": ["emitted_at"], "role": "envelope.emitted_at"},
+    {"family": "case-v1", "path": ["expires_at"], "role": "envelope.expires_at"},
+    {"family": "advice-v1", "path": ["emitted_at"], "role": "envelope.emitted_at"},
+    {"family": "advice-v1", "path": ["expires_at"], "role": "envelope.expires_at"},
+    {"family": "registry-v1", "path": ["emitted_at"], "role": "envelope.emitted_at"},
+    {"family": "registry-v1", "path": ["expires_at"], "role": "envelope.expires_at"},
+    {"family": "registry-v1", "path": ["body", "keys", 0, "not_before"], "role": "registry.key.not_before"},
+    {"family": "registry-v1", "path": ["body", "keys", 0, "expires_at"], "role": "registry.key.expires_at"},
+    {"family": "registry-v1", "path": ["body", "keys", 0, "revoked_at"], "role": "registry.key.revoked_at", "nullable": true}
+  ],
+  "boundary_cases": [
+    {
+      "name": "emitted-at-equals-verification-time",
+      "role": "envelope.emitted_at",
+      "value": "2026-07-28T12:00:00Z",
+      "accepted": true
+    },
+    {
+      "name": "emitted-at-one-microsecond-after-verification-time",
+      "role": "envelope.emitted_at",
+      "value": "2026-07-28T12:00:00.000001Z",
+      "accepted": false
+    },
+    {
+      "name": "expires-at-equals-verification-time",
+      "role": "envelope.expires_at",
+      "value": "2026-07-28T12:00:00Z",
+      "accepted": false
+    },
+    {
+      "name": "expires-at-one-microsecond-after-verification-time",
+      "role": "envelope.expires_at",
+      "value": "2026-07-28T12:00:00.000001Z",
+      "accepted": true
+    },
+    {
+      "name": "key-not-before-equals-emission-and-verification-time",
+      "role": "registry.key.not_before",
+      "value": "2026-07-28T12:00:00Z",
+      "envelope_emitted_at": "2026-07-28T12:00:00Z",
+      "accepted": true
+    },
+    {
+      "name": "key-not-before-after-emission-and-verification-time",
+      "role": "registry.key.not_before",
+      "value": "2026-07-28T12:00:00.000001Z",
+      "envelope_emitted_at": "2026-07-28T12:00:00Z",
+      "accepted": false
+    },
+    {
+      "name": "key-expires-at-equals-envelope-emission-time",
+      "role": "registry.key.expires_at",
+      "value": "2026-07-28T11:45:00Z",
+      "envelope_emitted_at": "2026-07-28T11:45:00Z",
+      "accepted": false
+    },
+    {
+      "name": "key-expires-at-equals-verification-time",
+      "role": "registry.key.expires_at",
+      "value": "2026-07-28T12:00:00Z",
+      "accepted": false
+    },
+    {
+      "name": "key-expires-at-after-verification-time",
+      "role": "registry.key.expires_at",
+      "value": "2026-07-28T12:00:00.000001Z",
+      "accepted": true
+    },
+    {
+      "name": "key-revoked-at-equals-envelope-emission-time",
+      "role": "registry.key.revoked_at",
+      "value": "2026-07-28T11:45:00Z",
+      "envelope_emitted_at": "2026-07-28T11:45:00Z",
+      "accepted": false
+    },
+    {
+      "name": "key-revoked-at-equals-verification-time",
+      "role": "registry.key.revoked_at",
+      "value": "2026-07-28T12:00:00Z",
+      "accepted": false
+    },
+    {
+      "name": "key-revoked-at-after-verification-time",
+      "role": "registry.key.revoked_at",
+      "value": "2026-07-28T12:00:00.000001Z",
+      "accepted": true
+    }
+  ]
+}

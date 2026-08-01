@@ -1,0 +1,12 @@
+# Execute as the matching dedicated edge UID snagline-edge-EDGE_ID. The
+# private edge socket is intentionally inaccessible to every other UID.
+# This is a one-shot command, not an environment file: snagline-front accepts
+# only flags. It reads no edge SQLite and holds no SSP, PostgreSQL, NATS, or
+# Buzz credential.
+snagline-front \
+  --mode cli \
+  --socket /run/snagline-edge-EDGE_ID/edge.sock \
+  --owner front-cli-EDGE_ID \
+  --lease 1m \
+  --operation-timeout 15s \
+  --limit 1

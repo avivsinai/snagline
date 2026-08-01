@@ -1,0 +1,9 @@
+DROP TABLE authority_outbox;
+DROP TABLE authority_audit;
+DROP TABLE authority_registries;
+DROP TABLE authority_edge_generation_high_water;
+DROP TABLE authority_registry_heads;
+DROP TABLE authority_edge_delivery_sequences;
+DROP TABLE authority_advice;
+DROP TABLE authority_cases;
+DROP TABLE authority_revisions;

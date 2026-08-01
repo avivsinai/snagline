@@ -1,0 +1,20 @@
+{
+  "tenant": "REPLACE_WITH_TENANT",
+  "postgres_dsn": "postgresql://snagline_buzz_projector_runtime@postgres.example.invalid:5432/snagline?sslmode=verify-full&sslrootcert=system",
+  "authority_id": "REPLACE_WITH_IMMUTABLE_AUTHORITY_ID",
+  "projection_state_path": "/var/lib/snagline-buzz-projector/projection.sqlite",
+  "projection_key_file": "/run/snagline-buzz-projector/projection-sqlite.key",
+  "relay_url": "https://buzz.example.invalid",
+  "buzz_private_key_file": "/run/snagline-buzz-projector/projector-nostr.key",
+  "registry_root_key_id": "REPLACE_WITH_REGISTRY_ROOT_KEY_ID",
+  "registry_root_public_key_file": "/run/snagline-buzz-projector/registry-root-public.pem",
+  "domain_channels": {
+    "REPLACE_WITH_DOMAIN": "123e4567-e89b-42d3-a456-426614174000"
+  },
+  "poll_interval": "5s",
+  "batch_size": 100,
+  "request_timeout": "10s",
+  "backoff_initial": "1s",
+  "backoff_max": "1m",
+  "ops_socket": "/run/snagline-buzz-projector/ops.sock"
+}
