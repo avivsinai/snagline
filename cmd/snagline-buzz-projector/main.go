@@ -299,6 +299,7 @@ func newDomainChannelMap(raw map[string]string) (domainChannelMap, error) {
 		return nil, errors.New("buzz projector domain map is required")
 	}
 	mapping := make(domainChannelMap, len(raw))
+	channels := make(map[string]struct{}, len(raw))
 	for domain, channel := range raw {
 		if domain == "" || domain != strings.TrimSpace(domain) || channel == "" || channel != strings.TrimSpace(channel) {
 			return nil, errors.New("buzz projector domain map is invalid")
@@ -307,6 +308,10 @@ func newDomainChannelMap(raw map[string]string) (domainChannelMap, error) {
 		if err != nil || parsed.String() != channel {
 			return nil, errors.New("buzz projector channel must be a canonical UUID")
 		}
+		if _, exists := channels[channel]; exists {
+			return nil, errors.New("buzz projector channel must map to exactly one domain")
+		}
+		channels[channel] = struct{}{}
 		mapping[domain] = channel
 	}
 	return mapping, nil

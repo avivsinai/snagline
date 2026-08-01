@@ -165,3 +165,13 @@ func TestDomainChannelMapDoesNotNormalizeOrFallBack(t *testing.T) {
 		}
 	}
 }
+
+func TestDomainChannelMapRejectsSharedChannelAcrossDomains(t *testing.T) {
+	const channelID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if _, err := newDomainChannelMap(map[string]string{
+		"payments.example": channelID,
+		"support.example":  channelID,
+	}); err == nil {
+		t.Fatal("newDomainChannelMap() accepted two domains mapped to the same channel")
+	}
+}
