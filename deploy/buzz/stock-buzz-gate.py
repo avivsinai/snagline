@@ -14,16 +14,18 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
 
-SCHEMA = "snagline.stock-buzz.deployment.v2"
-EVIDENCE_SCHEMA = "snagline.stock-buzz.live-evidence.v2"
+SCHEMA = "snagline.stock-buzz.deployment.v3"
+EVIDENCE_SCHEMA = "snagline.stock-buzz.live-evidence.v3"
 BUZZ_REPOSITORY = "https://github.com/block/buzz"
 BUZZ_TAG = "v0.5.2"
 BUZZ_COMMIT = "3e48f1b2365d326ee1c9582448d86a99b44ecd5d"
@@ -37,8 +39,10 @@ KUBERNETES_SECRET_KEY = re.compile(r"^[A-Za-z0-9](?:[-A-Za-z0-9._]{0,251}[A-Za-z
 HEX128 = re.compile(r"^[0-9a-f]{128}$")
 MAX_EVIDENCE_AGE = dt.timedelta(hours=24)
 MAX_FUTURE_SKEW = dt.timedelta(minutes=5)
+MAX_POSITIVE_OBSERVATION_LAG = dt.timedelta(seconds=5)
 MAX_NIP_OA_AUTH_TAG_BYTES = 1024
 ATTESTATION_SCHEMA = "snagline.dispatcher-policy-attestation.v1"
+ACP_NEGATIVE_OBSERVATION_SCHEMA = "snagline.acp-negative-observation-attestation.v1"
 SECP256K1_FIELD = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 SECP256K1_GENERATOR = (
@@ -63,6 +67,12 @@ COMMITTED_SAMPLE_ATTESTOR_PUBLIC_KEYS = frozenset(
 
 class GateError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class ExactFile:
+    path: Path
+    data: bytes
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -228,6 +238,40 @@ def parse_exact_profile_content(content: str) -> dict[str, str]:
     }
 
 
+def validate_signed_nostr_event(
+    value: object, where: str
+) -> tuple[str, str, int, int, list[list[str]]]:
+    event = require_object(value, where)
+    if set(event) != {"id", "pubkey", "created_at", "kind", "tags", "content", "sig"}:
+        raise GateError(f"{where} fields are incomplete or widened")
+    event_id = require_pubkey(event.get("id"), f"{where}.id")
+    public_key = require_pubkey(event.get("pubkey"), f"{where}.pubkey")
+    created_at = event.get("created_at")
+    if type(created_at) is not int or created_at < 0 or created_at > 0xFFFFFFFFFFFFFFFF:
+        raise GateError(f"{where}.created_at must be an unsigned integer")
+    kind = event.get("kind")
+    if type(kind) is not int or kind < 0 or kind > 0xFFFFFFFF:
+        raise GateError(f"{where}.kind must be an unsigned 32-bit integer")
+    tags = event.get("tags")
+    if not isinstance(tags, list) or not all(
+        isinstance(tag, list) and all(isinstance(item, str) for item in tag)
+        for tag in tags
+    ):
+        raise GateError(f"{where}.tags must be Nostr string arrays")
+    content = require_string(event.get("content"), f"{where}.content")
+    serialized = json.dumps(
+        [0, public_key, created_at, kind, tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    computed_id = hashlib.sha256(serialized).digest()
+    if computed_id.hex() != event_id:
+        raise GateError(f"{where} id does not match its exact Nostr serialization")
+    if not verify_bip340(public_key, computed_id, event.get("sig")):
+        raise GateError(f"{where} BIP340 signature is invalid")
+    return event_id, public_key, created_at, kind, tags
+
+
 def validate_signed_profile_event(
     value: object,
 ) -> tuple[str, dict[str, str], list[list[str]], int, int]:
@@ -264,9 +308,19 @@ def validate_signed_profile_event(
 
 
 def load_json(path: str) -> object:
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise GateError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
     try:
         with Path(path).open(encoding="utf-8") as handle:
-            return json.load(handle)
+            return json.load(handle, object_pairs_hook=reject_duplicates)
+    except GateError:
+        raise
     except (OSError, json.JSONDecodeError) as error:
         raise GateError(f"cannot read JSON: {error}") from error
 
@@ -314,9 +368,12 @@ def validate_relay(manifest: dict[str, object]) -> None:
         raise GateError("stock_buzz.repository must pin block/buzz")
     if stock.get("tag") != BUZZ_TAG or stock.get("commit") != BUZZ_COMMIT:
         raise GateError("stock_buzz must pin v0.5.2 commit 3e48f1b2365d326ee1c9582448d86a99b44ecd5d")
-    image = require_string(stock.get("relay_image"), "stock_buzz.relay_image")
-    if not IMAGE.fullmatch(image):
-        raise GateError("stock_buzz.relay_image must be a real immutable @sha256 digest; placeholders fail closed")
+    for role in ("relay", "acp"):
+        image = require_string(stock.get(f"{role}_image"), f"stock_buzz.{role}_image")
+        if not IMAGE.fullmatch(image):
+            raise GateError(
+                f"stock_buzz.{role}_image must be a real immutable @sha256 digest; placeholders fail closed"
+            )
 
     relay = require_object(manifest.get("relay"), "relay")
     relay_url = require_string(relay.get("url"), "relay.url")
@@ -485,6 +542,62 @@ def validate_acp_and_tools(manifest: dict[str, object], pubkeys: dict[str, str])
         attestor_public_key,
         "external_dispatcher_tool_policy.attestor_public_key",
     )
+    observer = require_object(manifest.get("external_acp_observer"), "external_acp_observer")
+    if set(observer) != {
+        "usage",
+        "key_id",
+        "public_key",
+        "specialist_launch_args",
+        "specialist_behavior",
+    }:
+        raise GateError(
+            "external_acp_observer must contain exactly usage, key_id, public_key, specialist_launch_args, and specialist_behavior"
+        )
+    if observer.get("usage") != "acp-negative-observation":
+        raise GateError("external_acp_observer.usage must be acp-negative-observation")
+    observer_key_id = require_string(observer.get("key_id"), "external_acp_observer.key_id")
+    observer_public_key = require_string(observer.get("public_key"), "external_acp_observer.public_key")
+    if observer_public_key in COMMITTED_SAMPLE_ATTESTOR_PUBLIC_KEYS:
+        raise GateError("external_acp_observer.public_key must not use a committed fixture/sample key")
+    observer_raw_key = require_ed25519_public_key(
+        observer_public_key, "external_acp_observer.public_key"
+    )
+    if observer_raw_key.hex() in set(pubkeys.values()):
+        raise GateError("external_acp_observer key must be independent from every Nostr identity")
+    launch_args = observer.get("specialist_launch_args")
+    if (
+        not isinstance(launch_args, list)
+        or not launch_args
+        or not all(isinstance(value, str) and value and "\x00" not in value for value in launch_args)
+        or not launch_args[0].startswith("/")
+    ):
+        raise GateError("external_acp_observer.specialist_launch_args must start with an absolute executable")
+    behavior = require_object(
+        observer.get("specialist_behavior"), "external_acp_observer.specialist_behavior"
+    )
+    if set(behavior) != {
+        "agent_command",
+        "agent_args_sha256",
+        "model_config_sha256",
+    }:
+        raise GateError("external_acp_observer.specialist_behavior has invalid fields")
+    agent_command = require_string(
+        behavior.get("agent_command"),
+        "external_acp_observer.specialist_behavior.agent_command",
+    )
+    if not agent_command.startswith("/"):
+        raise GateError("external_acp_observer specialist agent command must be absolute")
+    for field in ("agent_args_sha256", "model_config_sha256"):
+        value = require_string(
+            behavior.get(field), f"external_acp_observer.specialist_behavior.{field}"
+        )
+        if not HEX64.fullmatch(value):
+            raise GateError(f"external_acp_observer.specialist_behavior.{field} must be sha256")
+    if (
+        observer_key_id == policy["attestor_key_id"]
+        or observer_public_key == attestor_public_key
+    ):
+        raise GateError("external_acp_observer must be independent from the dispatcher policy attestor")
 
 
 def require_ed25519_public_key(value: object, where: str) -> bytes:
@@ -498,8 +611,34 @@ def require_ed25519_public_key(value: object, where: str) -> bytes:
     return raw
 
 
-def parse_acp_config_specs(values: list[str]) -> dict[str, Path]:
-    configs: dict[str, Path] = {}
+def read_exact_regular_file(path: Path, label: str) -> ExactFile:
+    try:
+        path_status = path.lstat()
+        if stat.S_ISLNK(path_status.st_mode) or not stat.S_ISREG(path_status.st_mode):
+            raise GateError(f"actual {label} must be a regular non-symlink file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened_status = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_status.st_mode)
+                or (opened_status.st_dev, opened_status.st_ino)
+                != (path_status.st_dev, path_status.st_ino)
+            ):
+                raise GateError(f"actual {label} changed while it was opened")
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read()
+        finally:
+            os.close(descriptor)
+    except GateError:
+        raise
+    except OSError as error:
+        raise GateError(f"actual {label} cannot be read safely") from error
+    return ExactFile(path=path, data=data)
+
+
+def parse_acp_config_specs(values: list[str]) -> dict[str, ExactFile]:
+    configs: dict[str, ExactFile] = {}
     for value in values:
         role, separator, path = value.partition("=")
         candidate = Path(path)
@@ -510,14 +649,14 @@ def parse_acp_config_specs(values: list[str]) -> dict[str, Path]:
             or not candidate.is_absolute()
         ):
             raise GateError("--acp-config must be exactly specialist=ABSOLUTE_PATH and dispatcher=ABSOLUTE_PATH")
-        configs[role] = candidate
+        configs[role] = read_exact_regular_file(candidate, f"{role} ACP config")
     if set(configs) != {"specialist", "dispatcher"}:
         raise GateError("both actual specialist and dispatcher ACP config files are required")
     return configs
 
 
-def parse_acp_runtime_env_specs(values: list[str]) -> dict[str, Path]:
-    configs: dict[str, Path] = {}
+def parse_acp_runtime_env_specs(values: list[str]) -> dict[str, ExactFile]:
+    configs: dict[str, ExactFile] = {}
     for value in values:
         role, separator, path = value.partition("=")
         candidate = Path(path)
@@ -528,16 +667,18 @@ def parse_acp_runtime_env_specs(values: list[str]) -> dict[str, Path]:
             or not candidate.is_absolute()
         ):
             raise GateError("--acp-runtime-env must be exactly specialist=ABSOLUTE_PATH and dispatcher=ABSOLUTE_PATH")
-        configs[role] = candidate
+        configs[role] = read_exact_regular_file(
+            candidate, f"{role} ACP runtime environment"
+        )
     if set(configs) != {"specialist", "dispatcher"}:
         raise GateError("both actual specialist and dispatcher ACP runtime environment files are required")
     return configs
 
 
-def load_exact_runtime_env(path: Path, role: str) -> dict[str, str]:
+def load_exact_runtime_env(source: ExactFile, role: str) -> dict[str, str]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as error:
+        lines = source.data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
         raise GateError(f"actual {role} ACP runtime environment cannot be read") from error
     expected = {
         "BUZZ_ACP_SUBSCRIBE",
@@ -556,12 +697,12 @@ def load_exact_runtime_env(path: Path, role: str) -> dict[str, str]:
     return values
 
 
-def validate_acp_configs(manifest: dict[str, object], configs: dict[str, Path]) -> None:
+def validate_acp_configs(manifest: dict[str, object], configs: dict[str, ExactFile]) -> None:
     allowlists = require_object(manifest["official_channel_allowlists"], "official_channel_allowlists")
-    for role, path in configs.items():
+    for role, source in configs.items():
         try:
-            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            parsed = tomllib.loads(source.data.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             raise GateError(f"actual {role} ACP config cannot be parsed") from error
         if not isinstance(parsed, dict) or set(parsed) != {"rules"}:
             raise GateError(f"actual {role} ACP config must contain only stock [[rules]]")
@@ -583,7 +724,7 @@ def validate_acp_configs(manifest: dict[str, object], configs: dict[str, Path]) 
             rule_names.add(name)
             channels = rule.get("channels")
             kinds = rule.get("kinds")
-            kind_is_private_message = (
+            kind_is_open_channel_message = (
                 isinstance(kinds, list)
                 and len(kinds) == 1
                 and type(kinds[0]) is int
@@ -601,7 +742,7 @@ def validate_acp_configs(manifest: dict[str, object], configs: dict[str, Path]) 
                 raise GateError(f"actual {role} ACP rule.channels must be unique canonical UUIDs")
             if (
                 rule.get("require_mention") is not True
-                or not kind_is_private_message
+                or not kind_is_open_channel_message
                 or not set(channels).issubset(expected_channels)
                 or actual_channels.intersection(channels)
             ):
@@ -613,17 +754,17 @@ def validate_acp_configs(manifest: dict[str, object], configs: dict[str, Path]) 
 
 def validate_acp_runtime_envs(
     pubkeys: dict[str, str],
-    configs: dict[str, Path],
-    runtime_envs: dict[str, Path],
+    configs: dict[str, ExactFile],
+    runtime_envs: dict[str, ExactFile],
 ) -> None:
-    for role, path in runtime_envs.items():
-        values = load_exact_runtime_env(path, role)
+    for role, source in runtime_envs.items():
+        values = load_exact_runtime_env(source, role)
         if values["BUZZ_ACP_SUBSCRIBE"] != "config" or values["BUZZ_ACP_RESPOND_TO"] != "allowlist":
             raise GateError(
                 f"actual {role} ACP runtime must select config subscriptions "
                 "and the global allowlist author gate"
             )
-        if values["BUZZ_ACP_CONFIG"] != str(configs[role]):
+        if values["BUZZ_ACP_CONFIG"] != str(configs[role].path):
             raise GateError(f"actual {role} ACP runtime does not point to the validated config")
         raw_allowlist = values["BUZZ_ACP_RESPOND_TO_ALLOWLIST"]
         allowlist = raw_allowlist.split(",")
@@ -641,6 +782,17 @@ def validate_acp_runtime_envs(
 
 def validate_manifest(raw: object) -> dict[str, object]:
     manifest = require_object(raw, "manifest")
+    if set(manifest) != {
+        "schema",
+        "stock_buzz",
+        "relay",
+        "identities",
+        "channels",
+        "official_channel_allowlists",
+        "external_dispatcher_tool_policy",
+        "external_acp_observer",
+    }:
+        raise GateError("v3 deployment manifest fields are incomplete or widened")
     if manifest.get("schema") != SCHEMA:
         raise GateError(f"schema must be {SCHEMA}")
     validate_relay(manifest)
@@ -664,6 +816,56 @@ def parse_observed_at(value: object, where: str) -> dt.datetime:
     if instant > now + MAX_FUTURE_SKEW or now - instant > MAX_EVIDENCE_AGE:
         raise GateError(f"{where} is outside the bounded evidence age")
     return instant
+
+
+def verify_ed25519_attestation(
+    payload: dict[str, object],
+    signature_value: object,
+    public_key_value: object,
+    label: str,
+    domain: bytes = b"",
+) -> None:
+    signature = require_string(signature_value, f"{label}.signature")
+    try:
+        raw_signature = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+    except ValueError as error:
+        raise GateError(f"{label} signature is invalid") from error
+    if len(raw_signature) != 64 or base64.urlsafe_b64encode(raw_signature).rstrip(b"=").decode() != signature:
+        raise GateError(f"{label} signature is invalid")
+    raw_key = require_ed25519_public_key(public_key_value, f"{label} public key")
+    der = bytes.fromhex("302a300506032b6570032100") + raw_key
+    pem = b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(der) + b"-----END PUBLIC KEY-----\n"
+    with tempfile.TemporaryDirectory(prefix="snagline-buzz-gate-") as directory:
+        root = Path(directory)
+        key_path, message_path, signature_path = root / "key.pem", root / "message", root / "signature"
+        key_path.write_bytes(pem)
+        message_path.write_bytes(domain + canonical_bytes(payload))
+        signature_path.write_bytes(raw_signature)
+        try:
+            openssl = os.environ.get("SNAGLINE_OPENSSL_BIN", "openssl")
+            result = subprocess.run(
+                [
+                    openssl,
+                    "pkeyutl",
+                    "-verify",
+                    "-pubin",
+                    "-inkey",
+                    str(key_path),
+                    "-rawin",
+                    "-in",
+                    str(message_path),
+                    "-sigfile",
+                    str(signature_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise GateError(f"{label} verifier is unavailable") from error
+    if result.returncode != 0:
+        raise GateError(f"{label} signature does not verify")
 
 
 def verify_attestation(manifest: dict[str, object], value: object, evidence_observed: dt.datetime) -> None:
@@ -692,54 +894,476 @@ def verify_attestation(manifest: dict[str, object], value: object, evidence_obse
         raise GateError("dispatcher policy attestation identity or exact one-tool policy differs")
     if parse_observed_at(payload["observed_at"], "dispatcher policy attestation.observed_at") != evidence_observed:
         raise GateError("dispatcher policy attestation timestamp must equal evidence.observed_at")
-    signature = require_string(attestation.get("signature"), "dispatcher policy attestation.signature")
-    try:
-        raw_signature = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
-    except ValueError as error:
-        raise GateError("dispatcher policy attestation signature is invalid") from error
-    if len(raw_signature) != 64 or base64.urlsafe_b64encode(raw_signature).rstrip(b"=").decode() != signature:
-        raise GateError("dispatcher policy attestation signature is invalid")
-    raw_key = require_ed25519_public_key(
+    verify_ed25519_attestation(
+        payload,
+        attestation.get("signature"),
         expected["attestor_public_key"],
-        "external_dispatcher_tool_policy.attestor_public_key",
+        "dispatcher policy attestation",
     )
-    der = bytes.fromhex("302a300506032b6570032100") + raw_key
-    pem = b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(der) + b"-----END PUBLIC KEY-----\n"
-    with tempfile.TemporaryDirectory(prefix="snagline-buzz-gate-") as directory:
-        root = Path(directory)
-        key_path, message_path, signature_path = root / "key.pem", root / "message", root / "signature"
-        key_path.write_bytes(pem)
-        message_path.write_bytes(canonical_bytes(payload))
-        signature_path.write_bytes(raw_signature)
-        try:
-            openssl = os.environ.get("SNAGLINE_OPENSSL_BIN", "openssl")
-            result = subprocess.run(
-                [
-                    openssl,
-                    "pkeyutl",
-                    "-verify",
-                    "-pubin",
-                    "-inkey",
-                    str(key_path),
-                    "-rawin",
-                    "-in",
-                    str(message_path),
-                    "-sigfile",
-                    str(signature_path),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise GateError("dispatcher policy attestation verifier is unavailable") from error
-    if result.returncode != 0:
-        raise GateError("dispatcher policy attestation signature does not verify")
 
 
-def validate_evidence(manifest: dict[str, object], raw: object) -> None:
+def sha256_file(source: ExactFile) -> str:
+    return hashlib.sha256(source.data).hexdigest()
+
+
+def verify_acp_negative_observation(
+    manifest: dict[str, object],
+    trigger_value: object,
+    probe_profile_value: object,
+    positive_trigger_value: object,
+    positive_reply_value: object,
+    attestation_value: object,
+    evidence_observed: dt.datetime,
+    configs: dict[str, ExactFile],
+    runtime_envs: dict[str, ExactFile],
+    observer_challenge: str,
+) -> None:
+    (
+        trigger_event_id,
+        trigger_author,
+        trigger_created_at,
+        trigger_kind,
+        trigger_tags,
+    ) = validate_signed_nostr_event(trigger_value, "signed negative ACP trigger event")
+    identities = require_object(manifest["identities"], "identities")
+    specialist_pubkey = identities["specialist"]["pubkey"]
+    if trigger_author in {
+        entry["pubkey"] for entry in identities.values() if isinstance(entry, dict)
+    }:
+        raise GateError("negative ACP trigger author is present in the configured allowlist")
+    if trigger_kind != 9:
+        raise GateError("negative ACP probe must use an open-channel kind-9 mention")
+    if (
+        len(trigger_tags) != 2
+        or len(trigger_tags[0]) != 2
+        or trigger_tags[0][0] != "h"
+        or len(trigger_tags[1]) != 2
+        or trigger_tags[1] != ["p", specialist_pubkey]
+    ):
+        raise GateError("negative ACP trigger must be an exact official-channel specialist mention")
+    channel = trigger_tags[0][1]
+    if channel not in manifest["official_channel_allowlists"]["specialist"]:
+        raise GateError("negative ACP probe was not in a specialist official channel")
+
+    (
+        probe_profile_event_id,
+        probe_profile_author,
+        probe_profile_created_at,
+        probe_profile_kind,
+        probe_profile_tags,
+    ) = validate_signed_nostr_event(
+        probe_profile_value, "signed negative ACP probe profile event"
+    )
+    if (
+        probe_profile_author != trigger_author
+        or probe_profile_kind != 0
+        or len(probe_profile_tags) != 1
+    ):
+        raise GateError("negative ACP probe profile is not the trigger author's exact kind-0 event")
+    raw_probe_auth_tag = json.dumps(
+        probe_profile_tags[0], separators=(",", ":"), ensure_ascii=False
+    )
+    probe_owner, _, probe_conditions = validate_nip_oa_auth_tag(
+        raw_probe_auth_tag, trigger_author
+    )
+    validate_nip_oa_conditions(
+        probe_conditions, probe_profile_kind, probe_profile_created_at
+    )
+    specialist_owner = identities["specialist"]["owner_pubkey"]
+    declared_human_pubkeys = {
+        entry["pubkey"]
+        for entry in identities.values()
+        if isinstance(entry, dict) and entry.get("kind") == "human"
+    }
+    if probe_owner not in declared_human_pubkeys or probe_owner == specialist_owner:
+        raise GateError("negative ACP probe profile owner must be a distinct declared human")
+
+    (
+        positive_trigger_id,
+        positive_trigger_author,
+        positive_trigger_created_at,
+        positive_trigger_kind,
+        positive_trigger_tags,
+    ) = validate_signed_nostr_event(
+        positive_trigger_value, "signed positive ACP trigger event"
+    )
+    (
+        positive_reply_id,
+        positive_reply_author,
+        positive_reply_created_at,
+        positive_reply_kind,
+        positive_reply_tags,
+    ) = validate_signed_nostr_event(
+        positive_reply_value, "signed positive ACP reply event"
+    )
+    human_pubkeys = {
+        entry["pubkey"]
+        for entry in identities.values()
+        if isinstance(entry, dict) and entry.get("kind") == "human"
+    }
+    if (
+        positive_trigger_author not in human_pubkeys
+        or positive_trigger_kind != 9
+        or positive_trigger_tags != [["h", channel], ["p", specialist_pubkey]]
+        or positive_reply_author != specialist_pubkey
+        or positive_reply_kind != 9
+        or positive_reply_tags
+        != [["h", channel], ["e", positive_trigger_id], ["p", positive_trigger_author]]
+    ):
+        raise GateError("signed positive ACP control is not an exact human-steering wake and reply")
+
+    attestation = require_object(
+        attestation_value, "evidence.acp_negative_observation_attestation"
+    )
+    payload_fields = (
+        "schema",
+        "key_id",
+        "manifest_sha256",
+        "buzz_relay_image",
+        "buzz_acp_image",
+        "observer_run_id",
+        "probe_nonce",
+        "specialist_process_run_id",
+        "specialist_process_started_at",
+        "specialist_launch_args",
+        "specialist_effective_behavior_env",
+        "rust_log",
+        "specialist_identity",
+        "specialist_pubkey",
+        "trigger_event_id",
+        "trigger_author_pubkey",
+        "channel",
+        "relay_accepted_at",
+        "observation_window_started_at",
+        "author_gate_rejected_at",
+        "observation_window_ended_at",
+        "observation_duration_seconds",
+        "post_window_grace_seconds",
+        "specialist_acp_config_sha256",
+        "specialist_acp_runtime_env_sha256",
+        "author_gate_rejection_observed",
+        "same_owner_sibling",
+        "fresh_process_owner_cache",
+        "probe_was_first_seen_author",
+        "owner_query_error",
+        "profile_lookup_capture_basis",
+        "profile_lookup_process_run_id",
+        "profile_lookup_request_id",
+        "profile_lookup_filter",
+        "profile_lookup_response_event_ids",
+        "profile_lookup_complete",
+        "profile_lookup_timeout",
+        "profile_lookup_error",
+        "probe_profile_event_id",
+        "probe_owner_pubkey",
+        "capture_basis",
+        "log_capture_complete",
+        "log_gap_count",
+        "relay_lag_events",
+        "reconnect_count",
+        "process_restart_count",
+        "supervisor_capture_basis",
+        "supervisor_process_run_id",
+        "supervisor_capture_complete",
+        "negative_window_invocation_ids",
+        "negative_window_invocation_count",
+        "reply_query_complete",
+        "reply_query_error",
+        "reply_query_started_at",
+        "reply_query_completed_at",
+        "reply_query_filters",
+        "reply_query_trigger_reference_event_ids",
+        "reply_query_channel_catchall_event_ids",
+        "positive_control_trigger_event_id",
+        "positive_control_reply_event_id",
+        "positive_control_same_process_run_id",
+        "positive_control_observed",
+        "positive_control_relay_accepted_at",
+        "positive_control_invocation_id",
+        "positive_control_turn_triggering_event_ids",
+        "positive_control_reply_observed_at",
+        "signed_at",
+        "observed_at",
+    )
+    payload = {key: attestation.get(key) for key in payload_fields}
+    if (
+        set(attestation) != set(payload_fields) | {"signature"}
+        or payload["schema"] != ACP_NEGATIVE_OBSERVATION_SCHEMA
+    ):
+        raise GateError("ACP negative observation attestation has invalid fields")
+    observer = require_object(manifest["external_acp_observer"], "external_acp_observer")
+    if (
+        payload["key_id"] != observer["key_id"]
+        or payload["manifest_sha256"] != digest(manifest)
+        or payload["buzz_relay_image"] != manifest["stock_buzz"]["relay_image"]
+        or payload["buzz_acp_image"] != manifest["stock_buzz"]["acp_image"]
+    ):
+        raise GateError("ACP negative observation is not bound to its observer, manifest, or Buzz image")
+    if (
+        payload["specialist_identity"] != "specialist"
+        or payload["specialist_pubkey"] != specialist_pubkey
+        or payload["trigger_event_id"] != trigger_event_id
+        or payload["trigger_author_pubkey"] != trigger_author
+        or payload["channel"] != channel
+    ):
+        raise GateError("ACP negative observation differs from its exact specialist trigger")
+    if (
+        payload["specialist_acp_config_sha256"]
+        != sha256_file(configs["specialist"])
+        or payload["specialist_acp_runtime_env_sha256"]
+        != sha256_file(runtime_envs["specialist"])
+    ):
+        raise GateError("ACP negative observation is not bound to the actual specialist ACP files")
+    if payload["specialist_launch_args"] != observer["specialist_launch_args"] or payload["rust_log"] != "debug":
+        raise GateError("ACP negative observation is not bound to the required secret-free debug launch")
+    behavior = require_object(
+        observer["specialist_behavior"], "external_acp_observer.specialist_behavior"
+    )
+    runtime_values = load_exact_runtime_env(runtime_envs["specialist"], "specialist")
+    expected_behavior_env = {
+        "acp_subscribe": "config",
+        "acp_config_sha256": sha256_file(configs["specialist"]),
+        "acp_runtime_env_sha256": sha256_file(runtime_envs["specialist"]),
+        "respond_to": "allowlist",
+        "respond_to_allowlist": runtime_values[
+            "BUZZ_ACP_RESPOND_TO_ALLOWLIST"
+        ].split(","),
+        "auth_tag_owner_pubkey": specialist_owner,
+        "agent_identity_pubkey": specialist_pubkey,
+        "private_key_derived_pubkey": specialist_pubkey,
+        "agent_command": behavior["agent_command"],
+        "agent_args_sha256": behavior["agent_args_sha256"],
+        "model_config_sha256": behavior["model_config_sha256"],
+        "mcp_command": None,
+        "agents": 1,
+        "setup_payload_sha256": None,
+        "lazy_pool": False,
+        "relay_observer": False,
+        "relay_url": manifest["relay"]["url"],
+        "loaded_buzz_acp_behavior_keys": [
+            "BUZZ_ACP_AGENT_ARGS",
+            "BUZZ_ACP_AGENT_COMMAND",
+            "BUZZ_ACP_CONFIG",
+            "BUZZ_ACP_MODEL",
+            "BUZZ_ACP_PRIVATE_KEY",
+            "BUZZ_ACP_RESPOND_TO",
+            "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
+            "BUZZ_ACP_SUBSCRIBE",
+            "BUZZ_AUTH_TAG",
+        ],
+        "unexpected_buzz_acp_behavior_keys": [],
+    }
+    if payload["specialist_effective_behavior_env"] != expected_behavior_env:
+        raise GateError("ACP negative observation normalized behavior environment differs or contains unexpected keys")
+    if (
+        not isinstance(payload["observer_run_id"], str)
+        or not UUID.fullmatch(payload["observer_run_id"])
+        or not isinstance(payload["specialist_process_run_id"], str)
+        or not UUID.fullmatch(payload["specialist_process_run_id"])
+        or payload["observer_run_id"] == payload["specialist_process_run_id"]
+        or not isinstance(payload["probe_nonce"], str)
+        or not HEX64.fullmatch(payload["probe_nonce"])
+        or payload["probe_nonce"] != observer_challenge
+    ):
+        raise GateError("ACP negative observation must bind distinct run IDs and a canonical nonce")
+    if payload["author_gate_rejection_observed"] is not True:
+        raise GateError("ACP negative observer did not attest an author-gate rejection")
+    if payload["same_owner_sibling"] is not False:
+        raise GateError("ACP negative probe author is a same-owner sibling")
+    if (
+        payload["fresh_process_owner_cache"] is not True
+        or payload["probe_was_first_seen_author"] is not True
+        or payload["owner_query_error"] is not False
+    ):
+        raise GateError("ACP negative observer did not prove a fresh first-seen owner-cache decision")
+    if (
+        payload["profile_lookup_capture_basis"]
+        != "external-supervisor-relay-proxy"
+        or payload["profile_lookup_process_run_id"]
+        != payload["specialist_process_run_id"]
+        or not isinstance(payload["profile_lookup_request_id"], str)
+        or not UUID.fullmatch(payload["profile_lookup_request_id"])
+        or payload["profile_lookup_filter"]
+        != {"authors": [trigger_author], "kinds": [0], "limit": 1}
+        or payload["profile_lookup_response_event_ids"]
+        != [probe_profile_event_id]
+        or payload["profile_lookup_complete"] is not True
+        or payload["profile_lookup_timeout"] is not False
+        or payload["profile_lookup_error"] is not False
+        or payload["probe_profile_event_id"] != probe_profile_event_id
+        or payload["probe_owner_pubkey"] != probe_owner
+    ):
+        raise GateError("ACP negative probe profile lookup was incomplete, failed, or mismatched")
+    if (
+        payload["capture_basis"]
+        != "observer-correlated-relay-acceptance-and-acp-debug-log"
+        or payload["log_capture_complete"] is not True
+        or payload["log_gap_count"] != 0
+        or payload["relay_lag_events"] != 0
+        or payload["reconnect_count"] != 0
+        or payload["process_restart_count"] != 0
+    ):
+        raise GateError("ACP negative observation has a log gap, lag, reconnect, or process restart")
+    if (
+        payload["supervisor_capture_basis"]
+        != "external-specialist-process-supervisor"
+        or payload["supervisor_process_run_id"]
+        != payload["specialist_process_run_id"]
+        or payload["supervisor_capture_complete"] is not True
+        or payload["negative_window_invocation_ids"] != []
+        or payload["negative_window_invocation_count"] != 0
+    ):
+        raise GateError("external supervisor recorded or failed to exclude a negative-window invocation")
+    process_started = parse_observed_at(
+        payload["specialist_process_started_at"],
+        "ACP negative observation attestation.specialist_process_started_at",
+    )
+    relay_accepted = parse_observed_at(
+        payload["relay_accepted_at"],
+        "ACP negative observation attestation.relay_accepted_at",
+    )
+    window_started = parse_observed_at(
+        payload["observation_window_started_at"],
+        "ACP negative observation attestation.observation_window_started_at",
+    )
+    gate_rejected = parse_observed_at(
+        payload["author_gate_rejected_at"],
+        "ACP negative observation attestation.author_gate_rejected_at",
+    )
+    window_ended = parse_observed_at(
+        payload["observation_window_ended_at"],
+        "ACP negative observation attestation.observation_window_ended_at",
+    )
+    signed_at = parse_observed_at(
+        payload["signed_at"], "ACP negative observation attestation.signed_at"
+    )
+    attested_observed = parse_observed_at(
+        payload["observed_at"], "ACP negative observation attestation.observed_at"
+    )
+    reply_query_started = parse_observed_at(
+        payload["reply_query_started_at"],
+        "ACP negative observation attestation.reply_query_started_at",
+    )
+    reply_query_completed = parse_observed_at(
+        payload["reply_query_completed_at"],
+        "ACP negative observation attestation.reply_query_completed_at",
+    )
+    positive_relay_accepted = parse_observed_at(
+        payload["positive_control_relay_accepted_at"],
+        "ACP negative observation attestation.positive_control_relay_accepted_at",
+    )
+    positive_reply_observed = parse_observed_at(
+        payload["positive_control_reply_observed_at"],
+        "ACP negative observation attestation.positive_control_reply_observed_at",
+    )
+    if (
+        process_started >= relay_accepted
+        or trigger_created_at > relay_accepted.timestamp()
+        or not (
+            process_started.timestamp()
+            <= positive_trigger_created_at
+            <= positive_reply_created_at
+            < relay_accepted.timestamp()
+        )
+        or relay_accepted != window_started
+        or not window_started < gate_rejected < window_ended < signed_at
+        or not window_ended < reply_query_started <= reply_query_completed <= signed_at
+        or signed_at != evidence_observed
+        or attested_observed != evidence_observed
+        or type(payload["observation_duration_seconds"]) is not int
+        or payload["observation_duration_seconds"] != int((window_ended - window_started).total_seconds())
+        or not 10 <= payload["observation_duration_seconds"] <= 300
+        or type(payload["post_window_grace_seconds"]) is not int
+        or payload["post_window_grace_seconds"] != int((signed_at - window_ended).total_seconds())
+        or not 5 <= payload["post_window_grace_seconds"] <= 300
+    ):
+        raise GateError("ACP negative observation window is not bound to the trigger and evidence timestamp")
+    expected_filters = [
+        {
+            "authors": [specialist_pubkey],
+            "kinds": [9],
+            "#e": [trigger_event_id],
+            "since": int(window_started.timestamp()),
+            "until": int(reply_query_started.timestamp()),
+        },
+        {
+            "authors": [specialist_pubkey],
+            "kinds": [9],
+            "#h": [channel],
+            "since": int(window_started.timestamp()),
+            "until": int(reply_query_started.timestamp()),
+        },
+    ]
+    if (
+        payload["reply_query_complete"] is not True
+        or payload["reply_query_error"] is not False
+        or payload["reply_query_filters"] != expected_filters
+        or payload["reply_query_trigger_reference_event_ids"] != []
+        or payload["reply_query_channel_catchall_event_ids"] != []
+    ):
+        raise GateError("ACP negative observer reply query was incomplete, failed, widened, or found a reply")
+    if (
+        payload["positive_control_trigger_event_id"] != positive_trigger_id
+        or payload["positive_control_reply_event_id"] != positive_reply_id
+        or payload["positive_control_same_process_run_id"]
+        != payload["specialist_process_run_id"]
+        or payload["positive_control_observed"] is not True
+        or not isinstance(payload["positive_control_invocation_id"], str)
+        or not UUID.fullmatch(payload["positive_control_invocation_id"])
+        or payload["positive_control_turn_triggering_event_ids"]
+        != [positive_trigger_id]
+        or not (
+            dt.timedelta(0)
+            <= positive_relay_accepted
+            - dt.datetime.fromtimestamp(positive_trigger_created_at, dt.timezone.utc)
+            <= MAX_POSITIVE_OBSERVATION_LAG
+        )
+        or not (
+            dt.timedelta(0)
+            <= positive_reply_observed
+            - dt.datetime.fromtimestamp(positive_reply_created_at, dt.timezone.utc)
+            <= MAX_POSITIVE_OBSERVATION_LAG
+        )
+        or not process_started
+        < positive_relay_accepted
+        <= positive_reply_observed
+        < relay_accepted
+    ):
+        raise GateError("ACP positive control was not observed on the same uninterrupted process")
+    verify_ed25519_attestation(
+        payload,
+        attestation.get("signature"),
+        observer["public_key"],
+        "ACP negative observation attestation",
+        b"snagline:acp-negative-observation-attestation:v1\x00",
+    )
+
+
+def validate_evidence(
+    manifest: dict[str, object],
+    raw: object,
+    configs: dict[str, ExactFile],
+    runtime_envs: dict[str, ExactFile],
+    observer_challenge: str,
+) -> None:
     evidence = require_object(raw, "evidence")
+    if set(evidence) != {
+        "schema",
+        "manifest_sha256",
+        "observed_at",
+        "channel_inventory_complete",
+        "channel_inventory",
+        "relay_members",
+        "nip_oa_bindings",
+        "agent_profile_events",
+        "acp_positive_trigger_event",
+        "acp_positive_reply_event",
+        "acp_negative_trigger_event",
+        "acp_negative_probe_profile_event",
+        "acp_negative_observation_attestation",
+        "external_dispatcher_policy_attestation",
+    }:
+        raise GateError("v3 live evidence fields are incomplete or widened")
     if evidence.get("schema") != EVIDENCE_SCHEMA:
         raise GateError(f"evidence.schema must be {EVIDENCE_SCHEMA}")
     if evidence.get("manifest_sha256") != digest(manifest):
@@ -837,17 +1461,18 @@ def validate_evidence(manifest: dict[str, object], raw: object) -> None:
     if set(actual_profiles) != set(expected_profiles):
         raise GateError("live agent profile evidence is incomplete")
 
-    acp = require_object(evidence.get("acp_wake_reply"), "evidence.acp_wake_reply")
-    if acp.get("identity") != "specialist" or acp.get("woke") is not True or acp.get("replied") is not True:
-        raise GateError("live proof must show specialist ACP wake and reply")
-    if acp.get("author_pubkey") != identities["specialist"]["pubkey"]:
-        raise GateError("ACP reply author does not match specialist identity")
-    if acp.get("channel") not in manifest["official_channel_allowlists"]["specialist"]:
-        raise GateError("ACP reply was not in a specialist official channel")
-    if acp.get("trigger_author_pubkey") not in human_pubkeys:
-        raise GateError("ACP wake must prove a declared human can steer the specialist")
-    require_pubkey(acp.get("trigger_event_id"), "evidence.acp_wake_reply.trigger_event_id")
-    require_pubkey(acp.get("reply_event_id"), "evidence.acp_wake_reply.reply_event_id")
+    verify_acp_negative_observation(
+        manifest,
+        evidence.get("acp_negative_trigger_event"),
+        evidence.get("acp_negative_probe_profile_event"),
+        evidence.get("acp_positive_trigger_event"),
+        evidence.get("acp_positive_reply_event"),
+        evidence.get("acp_negative_observation_attestation"),
+        observed_at,
+        configs,
+        runtime_envs,
+        observer_challenge,
+    )
 
     verify_attestation(manifest, evidence.get("external_dispatcher_policy_attestation"), observed_at)
 
@@ -867,13 +1492,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--evidence")
     parser.add_argument("--acp-config", action="append", default=[])
     parser.add_argument("--acp-runtime-env", action="append", default=[])
+    parser.add_argument("--observer-challenge")
     args = parser.parse_args(argv)
     try:
         manifest = validate_manifest(load_json(args.manifest))
         identities = validate_identities(manifest)
         acp_configs = parse_acp_config_specs(args.acp_config)
+        acp_runtime_envs = parse_acp_runtime_env_specs(args.acp_runtime_env)
         validate_acp_configs(manifest, acp_configs)
-        validate_acp_runtime_envs(identities, acp_configs, parse_acp_runtime_env_specs(args.acp_runtime_env))
+        validate_acp_runtime_envs(identities, acp_configs, acp_runtime_envs)
         checks = [
             "pinned-stock-buzz",
             "closed-relay",
@@ -889,7 +1516,17 @@ def main(argv: list[str]) -> int:
         if args.command == "live":
             if not args.evidence:
                 raise GateError("--evidence is required for the live gate")
-            validate_evidence(manifest, load_json(args.evidence))
+            if not isinstance(args.observer_challenge, str) or not HEX64.fullmatch(
+                args.observer_challenge
+            ):
+                raise GateError("--observer-challenge is required for live and must be fresh 64 lowercase hex")
+            validate_evidence(
+                manifest,
+                load_json(args.evidence),
+                acp_configs,
+                acp_runtime_envs,
+                args.observer_challenge,
+            )
             checks.extend(
                 (
                     "live-complete-channel-inventory",
@@ -897,6 +1534,7 @@ def main(argv: list[str]) -> int:
                     "live-nip-oa-bindings",
                     "live-agent-operator-profiles",
                     "live-human-steer-reply",
+                    "live-non-allowlisted-no-wake",
                     "live-dispatcher-tool-attestation",
                 )
             )

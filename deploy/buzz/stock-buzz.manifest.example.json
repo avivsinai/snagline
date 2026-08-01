@@ -1,10 +1,11 @@
 {
-  "schema": "snagline.stock-buzz.deployment.v2",
+  "schema": "snagline.stock-buzz.deployment.v3",
   "stock_buzz": {
     "repository": "https://github.com/block/buzz",
     "tag": "v0.5.2",
     "commit": "3e48f1b2365d326ee1c9582448d86a99b44ecd5d",
-    "relay_image": "registry.example.invalid/block/buzz-relay@sha256:REPLACE_WITH_A_REAL_64_HEX_DIGEST"
+    "relay_image": "registry.example.invalid/block/buzz-relay@sha256:REPLACE_WITH_A_REAL_64_HEX_DIGEST",
+    "acp_image": "registry.example.invalid/block/buzz-acp@sha256:REPLACE_WITH_A_REAL_64_HEX_DIGEST"
   },
   "relay": {
     "url": "wss://buzz.example.invalid",
@@ -22,6 +23,11 @@
       "kind": "human",
       "pubkey": "REPLACE_WITH_OPERATOR_NOSTR_PUBKEY",
       "display_name": "Example Operator"
+    },
+    "probe_operator": {
+      "kind": "human",
+      "pubkey": "REPLACE_WITH_DISTINCT_PROBE_OPERATOR_NOSTR_PUBKEY",
+      "display_name": "Example Probe Operator"
     },
     "projector": {
       "kind": "agent",
@@ -79,5 +85,16 @@
     ],
     "attestor_key_id": "REPLACE_WITH_EXTERNAL_POLICY_ATTESTOR_KEY_ID",
     "attestor_public_key": "REPLACE_WITH_EXTERNAL_POLICY_ATTESTOR_ED25519_PUBLIC_KEY"
+  },
+  "external_acp_observer": {
+    "usage": "acp-negative-observation",
+    "key_id": "REPLACE_WITH_EXTERNAL_ACP_OBSERVER_KEY_ID",
+    "public_key": "REPLACE_WITH_EXTERNAL_ACP_OBSERVER_ED25519_PUBLIC_KEY",
+    "specialist_launch_args": ["REPLACE_WITH_ABSOLUTE_BUZZ_ACP_EXECUTABLE"],
+    "specialist_behavior": {
+      "agent_command": "REPLACE_WITH_ABSOLUTE_AGENT_HARNESS_EXECUTABLE",
+      "agent_args_sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "model_config_sha256": "REPLACE_WITH_64_HEX_SHA256"
+    }
   }
 }

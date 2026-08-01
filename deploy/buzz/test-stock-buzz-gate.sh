@@ -19,6 +19,8 @@ export SNAGLINE_OPENSSL_BIN="$openssl_bin"
 
 cp "$root/stock-buzz.manifest.example.json" "$scratch/manifest.json"
 "$openssl_bin" pkey -in "$scratch/attestor.pem" -pubout -outform DER >"$scratch/attestor.der"
+"$openssl_bin" genpkey -algorithm ED25519 -out "$scratch/acp-observer.pem"
+"$openssl_bin" pkey -in "$scratch/acp-observer.pem" -pubout -outform DER >"$scratch/acp-observer.der"
 
 cp "$root/stock-v0.5.2-acp-rules.fixture.toml" "$scratch/specialist-acp.toml"
 cp "$root/stock-v0.5.2-acp-rules.fixture.toml" "$scratch/dispatcher-acp.toml"
@@ -26,6 +28,8 @@ runtime_args=(
   --acp-runtime-env "specialist=$scratch/specialist-acp.env"
   --acp-runtime-env "dispatcher=$scratch/dispatcher-acp.env"
 )
+observer_challenge=5555555555555555555555555555555555555555555555555555555555555555
+live_args=(--observer-challenge "$observer_challenge")
 
 # The committed example is intentionally unlaunchable: mutable or placeholder
 # image coordinates must never be mistaken for a pinned stock deployment.
@@ -35,6 +39,7 @@ if python3 "$root/stock-buzz-gate.py" validate --manifest "$scratch/manifest.jso
 fi
 
 python3 - "$scratch/manifest.json" "$scratch/evidence.json" "$scratch/attestor.der" "$scratch/attestation-payload.json" \
+  "$scratch/acp-observer.der" "$scratch/acp-observer-payload.json" \
   "$scratch/example-placeholder-identities.json" \
   "$scratch/specialist-acp.env" "$scratch/dispatcher-acp.env" \
   "$scratch/specialist-acp.toml" "$scratch/dispatcher-acp.toml" <<'PY'
@@ -163,6 +168,26 @@ def profile_event(identity, secret, created_at, auth_tag, extra_auth_tag=None):
     }
 
 
+def signed_event(secret, created_at, kind, tags, content):
+    public_key, _ = schnorr_sign(secret, bytes(32))
+    serialized = json.dumps(
+        [0, public_key, created_at, kind, tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    _, signature = schnorr_sign(secret, event_id)
+    return {
+        "id": event_id.hex(),
+        "pubkey": public_key,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content,
+        "sig": signature,
+    }
+
+
 def nip_oa_auth_tag(agent_pubkey, owner_secret, conditions=""):
     message = hashlib.sha256(
         f"nostr:agent-auth:{agent_pubkey}:{conditions}".encode()
@@ -179,6 +204,8 @@ def nip_oa_auth_tag(agent_pubkey, owner_secret, conditions=""):
     evidence_path,
     key_path,
     payload_path,
+    observer_key_path,
+    observer_payload_path,
     placeholder_manifest_path,
     specialist_env_path,
     dispatcher_env_path,
@@ -188,15 +215,26 @@ def nip_oa_auth_tag(agent_pubkey, owner_secret, conditions=""):
 with open(manifest_path, encoding="utf-8") as handle:
     manifest = json.load(handle)
 manifest["stock_buzz"]["relay_image"] = "registry.example.invalid/block/buzz-relay@sha256:" + "a" * 64
+manifest["stock_buzz"]["acp_image"] = "registry.example.invalid/block/buzz-acp@sha256:" + "b" * 64
 policy = manifest["external_dispatcher_tool_policy"]
 with open(key_path, "rb") as handle:
     attestor_public_key = base64.urlsafe_b64encode(handle.read()[-32:]).rstrip(b"=").decode()
 policy["attestor_public_key"] = attestor_public_key
 policy["attestor_key_id"] = "test-attestor-2026-07"
+with open(observer_key_path, "rb") as handle:
+    observer_public_key = base64.urlsafe_b64encode(handle.read()[-32:]).rstrip(b"=").decode()
+manifest["external_acp_observer"]["public_key"] = observer_public_key
+manifest["external_acp_observer"]["key_id"] = "test-acp-observer-2026-08"
+manifest["external_acp_observer"]["specialist_launch_args"] = ["/usr/local/bin/buzz-acp"]
+manifest["external_acp_observer"]["specialist_behavior"] = {
+    "agent_command": "/opt/pi/bin/pi",
+    "agent_args_sha256": "c" * 64,
+    "model_config_sha256": "d" * 64,
+}
 with open(placeholder_manifest_path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle, sort_keys=True)
 identity_secrets = {}
-for name in ("operator", "projector", "specialist", "dispatcher"):
+for name in ("operator", "probe_operator", "projector", "specialist", "dispatcher"):
     secret, public_key = fresh_identity()
     identity_secrets[name] = secret
     manifest["identities"][name]["pubkey"] = public_key
@@ -231,6 +269,60 @@ auth_tags = {
     )
     for name in ("projector", "specialist", "dispatcher")
 }
+non_allowlisted_secret, non_allowlisted_pubkey = fresh_identity()
+probe_auth_tag = nip_oa_auth_tag(
+    non_allowlisted_pubkey, identity_secrets["probe_operator"]
+)
+negative_probe_profile_event = profile_event(
+    {
+        "pubkey": non_allowlisted_pubkey,
+        "profile": {
+            "name": "Negative ACP Probe - operated by Example Probe Operator",
+            "display_name": "Negative ACP Probe (operated by Example Probe Operator)",
+        },
+    },
+    non_allowlisted_secret,
+    profile_created_at - 70,
+    probe_auth_tag,
+)
+negative_trigger_event = signed_event(
+    non_allowlisted_secret,
+    profile_created_at - 30,
+    9,
+    [
+        ["h", manifest["channels"][0]["id"]],
+        ["p", manifest["identities"]["specialist"]["pubkey"]],
+    ],
+    "negative ACP allowlist probe",
+)
+positive_trigger_event = signed_event(
+    identity_secrets["operator"],
+    profile_created_at - 50,
+    9,
+    [
+        ["h", manifest["channels"][0]["id"]],
+        ["p", manifest["identities"]["specialist"]["pubkey"]],
+    ],
+    "positive ACP human-steering control",
+)
+positive_reply_event = signed_event(
+    identity_secrets["specialist"],
+    profile_created_at - 49,
+    9,
+    [
+        ["h", manifest["channels"][0]["id"]],
+        ["e", positive_trigger_event["id"]],
+        ["p", manifest["identities"]["operator"]["pubkey"]],
+    ],
+    "positive ACP control reply",
+)
+
+
+def observed_time(offset_seconds, microseconds=0):
+    return datetime.datetime.fromtimestamp(
+        profile_created_at + offset_seconds + microseconds / 1_000_000,
+        datetime.timezone.utc,
+    ).isoformat().replace("+00:00", "Z")
 payload = {
     "schema": "snagline.dispatcher-policy-attestation.v1",
     "key_id": policy["attestor_key_id"],
@@ -241,8 +333,148 @@ payload = {
 }
 with open(payload_path, "w", encoding="utf-8") as handle:
     handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+observer_payload = {
+    "schema": "snagline.acp-negative-observation-attestation.v1",
+    "key_id": manifest["external_acp_observer"]["key_id"],
+    "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
+    "buzz_relay_image": manifest["stock_buzz"]["relay_image"],
+    "buzz_acp_image": manifest["stock_buzz"]["acp_image"],
+    "observer_run_id": "123e4567-e89b-42d3-a456-426614174001",
+    "probe_nonce": "5" * 64,
+    "specialist_process_run_id": "123e4567-e89b-42d3-a456-426614174002",
+    "specialist_process_started_at": observed_time(-60),
+    "specialist_launch_args": manifest["external_acp_observer"]["specialist_launch_args"],
+    "specialist_effective_behavior_env": {
+        "acp_subscribe": "config",
+        "acp_config_sha256": hashlib.sha256(
+            open(specialist_config_path, "rb").read()
+        ).hexdigest(),
+        "acp_runtime_env_sha256": hashlib.sha256(
+            open(specialist_env_path, "rb").read()
+        ).hexdigest(),
+        "respond_to": "allowlist",
+        "respond_to_allowlist": [
+            identity["pubkey"]
+            for name, identity in manifest["identities"].items()
+            if name != "specialist"
+        ],
+        "auth_tag_owner_pubkey": manifest["identities"]["operator"]["pubkey"],
+        "agent_identity_pubkey": manifest["identities"]["specialist"]["pubkey"],
+        "private_key_derived_pubkey": manifest["identities"]["specialist"]["pubkey"],
+        "agent_command": manifest["external_acp_observer"]["specialist_behavior"]["agent_command"],
+        "agent_args_sha256": manifest["external_acp_observer"]["specialist_behavior"]["agent_args_sha256"],
+        "model_config_sha256": manifest["external_acp_observer"]["specialist_behavior"]["model_config_sha256"],
+        "mcp_command": None,
+        "agents": 1,
+        "setup_payload_sha256": None,
+        "lazy_pool": False,
+        "relay_observer": False,
+        "relay_url": manifest["relay"]["url"],
+        "loaded_buzz_acp_behavior_keys": [
+            "BUZZ_ACP_AGENT_ARGS",
+            "BUZZ_ACP_AGENT_COMMAND",
+            "BUZZ_ACP_CONFIG",
+            "BUZZ_ACP_MODEL",
+            "BUZZ_ACP_PRIVATE_KEY",
+            "BUZZ_ACP_RESPOND_TO",
+            "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
+            "BUZZ_ACP_SUBSCRIBE",
+            "BUZZ_AUTH_TAG",
+        ],
+        "unexpected_buzz_acp_behavior_keys": [],
+    },
+    "rust_log": "debug",
+    "specialist_identity": "specialist",
+    "specialist_pubkey": manifest["identities"]["specialist"]["pubkey"],
+    "trigger_event_id": negative_trigger_event["id"],
+    "trigger_author_pubkey": non_allowlisted_pubkey,
+    "channel": manifest["channels"][0]["id"],
+    "relay_accepted_at": observed_time(-30),
+    "observation_window_started_at": observed_time(-30),
+    "author_gate_rejected_at": observed_time(-29),
+    "observation_window_ended_at": observed_time(-10),
+    "observation_duration_seconds": 20,
+    "post_window_grace_seconds": 10,
+    "specialist_acp_config_sha256": hashlib.sha256(
+        open(specialist_config_path, "rb").read()
+    ).hexdigest(),
+    "specialist_acp_runtime_env_sha256": hashlib.sha256(
+        open(specialist_env_path, "rb").read()
+    ).hexdigest(),
+    "author_gate_rejection_observed": True,
+    "same_owner_sibling": False,
+    "fresh_process_owner_cache": True,
+    "probe_was_first_seen_author": True,
+    "owner_query_error": False,
+    "profile_lookup_capture_basis": "external-supervisor-relay-proxy",
+    "profile_lookup_process_run_id": "123e4567-e89b-42d3-a456-426614174002",
+    "profile_lookup_request_id": "123e4567-e89b-42d3-a456-426614174005",
+    "profile_lookup_filter": {
+        "authors": [non_allowlisted_pubkey],
+        "kinds": [0],
+        "limit": 1,
+    },
+    "profile_lookup_response_event_ids": [negative_probe_profile_event["id"]],
+    "profile_lookup_complete": True,
+    "profile_lookup_timeout": False,
+    "profile_lookup_error": False,
+    "probe_profile_event_id": negative_probe_profile_event["id"],
+    "probe_owner_pubkey": manifest["identities"]["probe_operator"]["pubkey"],
+    "capture_basis": "observer-correlated-relay-acceptance-and-acp-debug-log",
+    "log_capture_complete": True,
+    "log_gap_count": 0,
+    "relay_lag_events": 0,
+    "reconnect_count": 0,
+    "process_restart_count": 0,
+    "supervisor_capture_basis": "external-specialist-process-supervisor",
+    "supervisor_process_run_id": "123e4567-e89b-42d3-a456-426614174002",
+    "supervisor_capture_complete": True,
+    "negative_window_invocation_ids": [],
+    "negative_window_invocation_count": 0,
+    "reply_query_complete": True,
+    "reply_query_error": False,
+    "reply_query_started_at": observed_time(-9),
+    "reply_query_completed_at": observed_time(-1),
+    "reply_query_filters": [
+        {
+            "authors": [manifest["identities"]["specialist"]["pubkey"]],
+            "kinds": [9],
+            "#e": [negative_trigger_event["id"]],
+            "since": profile_created_at - 30,
+            "until": profile_created_at - 9,
+        },
+        {
+            "authors": [manifest["identities"]["specialist"]["pubkey"]],
+            "kinds": [9],
+            "#h": [manifest["channels"][0]["id"]],
+            "since": profile_created_at - 30,
+            "until": profile_created_at - 9,
+        },
+    ],
+    "reply_query_trigger_reference_event_ids": [],
+    "reply_query_channel_catchall_event_ids": [],
+    "positive_control_trigger_event_id": positive_trigger_event["id"],
+    "positive_control_reply_event_id": positive_reply_event["id"],
+    "positive_control_same_process_run_id": "123e4567-e89b-42d3-a456-426614174002",
+    "positive_control_observed": True,
+    "positive_control_relay_accepted_at": observed_time(-50, 250_000),
+    "positive_control_invocation_id": "123e4567-e89b-42d3-a456-426614174003",
+    "positive_control_turn_triggering_event_ids": [positive_trigger_event["id"]],
+    "positive_control_reply_observed_at": observed_time(-49, 500_000),
+    "signed_at": observed_at,
+    "observed_at": observed_at,
+}
+with open(observer_payload_path, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(observer_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+with open(observer_payload_path + ".message", "wb") as handle:
+    handle.write(
+        b"snagline:acp-negative-observation-attestation:v1\x00"
+        + json.dumps(
+            observer_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+    )
 evidence = {
-    "schema": "snagline.stock-buzz.live-evidence.v2",
+    "schema": "snagline.stock-buzz.live-evidence.v3",
     "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
     "observed_at": observed_at,
     "channel_inventory_complete": True,
@@ -250,7 +482,11 @@ evidence = {
         {"id": channel["id"], "type": channel["type"], "visibility": channel["visibility"]}
         for channel in manifest["channels"]
     ],
-    "relay_members": [manifest["identities"]["operator"]["pubkey"]],
+    "relay_members": [
+        identity["pubkey"]
+        for identity in manifest["identities"].values()
+        if identity["kind"] == "human"
+    ],
     "nip_oa_bindings": [
         {
             "agent_pubkey": identity["pubkey"],
@@ -266,13 +502,11 @@ evidence = {
         )
         for name in ("projector", "specialist", "dispatcher")
     ],
-    "acp_wake_reply": {
-        "identity": "specialist", "woke": True, "replied": True,
-        "author_pubkey": manifest["identities"]["specialist"]["pubkey"],
-        "trigger_author_pubkey": manifest["identities"]["operator"]["pubkey"],
-        "channel": manifest["channels"][0]["id"],
-        "trigger_event_id": "1" * 64, "reply_event_id": "2" * 64
-    },
+    "acp_positive_trigger_event": positive_trigger_event,
+    "acp_positive_reply_event": positive_reply_event,
+    "acp_negative_trigger_event": negative_trigger_event,
+    "acp_negative_probe_profile_event": negative_probe_profile_event,
+    "acp_negative_observation_attestation": observer_payload,
 }
 with open(evidence_path, "w", encoding="utf-8") as handle:
     json.dump(evidence, handle, sort_keys=True)
@@ -317,6 +551,40 @@ mutated["agent_profile_events"][projector_profile] = profile_event(
 )
 write_negative("resigned-extra-auth-tag", mutated)
 
+mutated = copy.deepcopy(evidence)
+del mutated["acp_negative_observation_attestation"]
+write_negative("missing-negative-acp-attestation", mutated)
+
+mutated = copy.deepcopy(evidence)
+mutated["acp_negative_observation_attestation"] = {
+    "author_gate_rejection_observed": True,
+    "harness_turn_ids": [],
+    "reply_event_ids": [],
+}
+write_negative("boolean-only-negative-acp-attestation", mutated)
+
+mutated = copy.deepcopy(evidence)
+mutated["acp_negative_trigger_event"]["content"] += " forged"
+write_negative("forged-negative-acp-trigger", mutated)
+
+same_owner_auth_tag = nip_oa_auth_tag(
+    non_allowlisted_pubkey, identity_secrets["operator"]
+)
+mutated = copy.deepcopy(evidence)
+mutated["acp_negative_probe_profile_event"] = profile_event(
+    {
+        "pubkey": non_allowlisted_pubkey,
+        "profile": {
+            "name": "Same-owner probe - operated by Example Operator",
+            "display_name": "Same-owner Probe (operated by Example Operator)",
+        },
+    },
+    non_allowlisted_secret,
+    profile_created_at - 70,
+    same_owner_auth_tag,
+)
+write_negative("same-owner-probe-profile", mutated)
+
 for name, conditions in (
     ("unauthorized-profile-kind", "kind=9"),
     ("unauthorized-profile-time", f"created_at<{profile_created_at}"),
@@ -347,11 +615,14 @@ if ! grep -q '64 lowercase hexadecimal characters' "$scratch/example-placeholder
   exit 1
 fi
 "$openssl_bin" pkeyutl -sign -rawin -inkey "$scratch/attestor.pem" -in "$scratch/attestation-payload.json" -out "$scratch/attestation.sig"
-python3 - "$scratch/evidence.json" "$scratch/attestation-payload.json" "$scratch/attestation.sig" <<'PY'
+"$openssl_bin" pkeyutl -sign -rawin -inkey "$scratch/acp-observer.pem" -in "$scratch/acp-observer-payload.json.message" -out "$scratch/acp-observer.sig"
+python3 - "$scratch/evidence.json" \
+  "$scratch/attestation-payload.json" "$scratch/attestation.sig" \
+  "$scratch/acp-observer-payload.json" "$scratch/acp-observer.sig" <<'PY'
 import base64
 import json
 import sys
-path, payload_path, signature_path = sys.argv[1:]
+path, payload_path, signature_path, observer_payload_path, observer_signature_path = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     evidence = json.load(handle)
 with open(payload_path, encoding="utf-8") as handle:
@@ -360,8 +631,248 @@ with open(signature_path, "rb") as handle:
     signature = base64.urlsafe_b64encode(handle.read()).rstrip(b"=").decode()
 attestation["signature"] = signature
 evidence["external_dispatcher_policy_attestation"] = attestation
+with open(observer_payload_path, encoding="utf-8") as handle:
+    observer_attestation = json.load(handle)
+with open(observer_signature_path, "rb") as handle:
+    observer_signature = base64.urlsafe_b64encode(handle.read()).rstrip(b"=").decode()
+observer_attestation["signature"] = observer_signature
+evidence["acp_negative_observation_attestation"] = observer_attestation
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(json.dumps(evidence, sort_keys=True))
+PY
+python3 - "$scratch/evidence.json" <<'PY'
+import copy
+import glob
+import json
+import sys
+
+base_path = sys.argv[1]
+with open(base_path, encoding="utf-8") as handle:
+    base = json.load(handle)
+for path in glob.glob(base_path + ".*"):
+    with open(path, encoding="utf-8") as handle:
+        evidence = json.load(handle)
+    evidence["external_dispatcher_policy_attestation"] = copy.deepcopy(
+        base["external_dispatcher_policy_attestation"]
+    )
+    if not path.endswith(("missing-negative-acp-attestation", "boolean-only-negative-acp-attestation")):
+        evidence["acp_negative_observation_attestation"] = copy.deepcopy(
+            base["acp_negative_observation_attestation"]
+        )
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(evidence, handle, sort_keys=True)
+PY
+
+mkdir "$scratch/acp-observer-mutations"
+python3 - "$scratch/evidence.json" "$scratch/acp-observer-mutations" <<'PY'
+import copy
+import datetime
+import json
+import pathlib
+import sys
+
+evidence_path, output_dir = sys.argv[1:]
+with open(evidence_path, encoding="utf-8") as handle:
+    evidence = json.load(handle)
+payload = copy.deepcopy(evidence["acp_negative_observation_attestation"])
+del payload["signature"]
+mutations = {}
+
+
+def payload_time(offset_seconds, microseconds=0):
+    observed = datetime.datetime.fromisoformat(
+        payload["observed_at"].replace("Z", "+00:00")
+    )
+    return (
+        observed
+        + datetime.timedelta(seconds=offset_seconds, microseconds=microseconds)
+    ).isoformat().replace("+00:00", "Z")
+
+mutated = copy.deepcopy(payload)
+mutated["manifest_sha256"] = "0" * 64
+mutations["unbound-manifest"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["buzz_relay_image"] = mutated["buzz_relay_image"].replace("a" * 64, "c" * 64)
+mutations["wrong-image"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["buzz_acp_image"] = mutated["buzz_acp_image"].replace("b" * 64, "c" * 64)
+mutations["wrong-acp-image"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["specialist_acp_config_sha256"] = "0" * 64
+mutations["wrong-config"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["specialist_acp_runtime_env_sha256"] = "0" * 64
+mutations["wrong-runtime-env"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["author_gate_rejection_observed"] = False
+mutations["no-author-gate-rejection"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["same_owner_sibling"] = True
+mutations["same-owner-sibling"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["negative_window_invocation_ids"] = ["123e4567-e89b-42d3-a456-426614174004"]
+mutated["negative_window_invocation_count"] = 1
+mutations["observed-turn"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["reply_query_channel_catchall_event_ids"] = ["4" * 64]
+mutations["observed-reply"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["observed_at"] = "2020-01-01T00:00:30Z"
+mutated["signed_at"] = "2020-01-01T00:00:30Z"
+mutated["observation_window_started_at"] = "2020-01-01T00:00:00Z"
+mutated["relay_accepted_at"] = "2020-01-01T00:00:00Z"
+mutated["author_gate_rejected_at"] = "2020-01-01T00:00:01Z"
+mutated["observation_window_ended_at"] = "2020-01-01T00:00:20Z"
+mutations["stale"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["process_restart_count"] = 1
+mutations["process-restarted"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["log_gap_count"] = 1
+mutations["log-gap"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["reply_query_error"] = True
+mutations["reply-query-error"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["reply_query_started_at"] = payload["observation_window_ended_at"]
+mutations["reply-query-start-not-after-window"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["reply_query_completed_at"] = payload["reply_query_started_at"]
+mutated["reply_query_started_at"] = payload["observed_at"]
+mutations["reply-query-completed-before-start"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_same_process_run_id"] = "123e4567-e89b-42d3-a456-426614174099"
+mutations["positive-other-process"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_turn_triggering_event_ids"] = []
+mutations["positive-missing-turn-trigger"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["specialist_launch_args"] = ["/tmp/not-buzz-acp"]
+mutations["wrong-launch"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["specialist_effective_behavior_env"]["unexpected_buzz_acp_behavior_keys"] = [
+    "BUZZ_ACP_NO_MENTION_FILTER"
+]
+mutations["unexpected-behavior-env"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["specialist_effective_behavior_env"]["relay_observer"] = True
+mutations["stock-relay-observer"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["profile_lookup_timeout"] = True
+mutations["profile-timeout"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["profile_lookup_filter"]["limit"] = 2
+mutations["profile-widened-filter"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["profile_lookup_process_run_id"] = "123e4567-e89b-42d3-a456-426614174099"
+mutations["profile-other-process"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["supervisor_capture_complete"] = False
+mutations["supervisor-incomplete"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_relay_accepted_at"] = payload["relay_accepted_at"]
+mutations["positive-accepted-too-late"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_reply_observed_at"] = payload["relay_accepted_at"]
+mutations["positive-reply-too-late"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_relay_accepted_at"] = payload_time(-51, 750_000)
+mutations["positive-trigger-reversed-lag"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["positive_control_relay_accepted_at"] = payload_time(-44, 500_000)
+mutated["positive_control_reply_observed_at"] = payload_time(-43, 500_000)
+mutations["positive-excessive-lag"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["probe_nonce"] = "not-a-nonce"
+mutations["bad-nonce"] = mutated
+
+mutated = copy.deepcopy(payload)
+mutated["unexpected"] = True
+mutations["widened"] = mutated
+
+root = pathlib.Path(output_dir)
+for name, value in mutations.items():
+    (root / f"{name}.payload.json").write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+PY
+for observer_payload in "$scratch"/acp-observer-mutations/*.payload.json; do
+  observer_name=$(basename "$observer_payload" .payload.json)
+  observer_signature="$scratch/acp-observer-mutations/$observer_name.sig"
+  python3 - "$observer_payload" "$observer_payload.message" <<'PY'
+import pathlib
+import sys
+
+payload_path, message_path = map(pathlib.Path, sys.argv[1:])
+message_path.write_bytes(
+    b"snagline:acp-negative-observation-attestation:v1\x00"
+    + payload_path.read_bytes()
+)
+PY
+  "$openssl_bin" pkeyutl -sign -rawin -inkey "$scratch/acp-observer.pem" \
+    -in "$observer_payload.message" -out "$observer_signature"
+  python3 - "$scratch/evidence.json" "$observer_payload" "$observer_signature" \
+    "$scratch/evidence.json.observer-$observer_name" <<'PY'
+import base64
+import json
+import sys
+
+evidence_path, payload_path, signature_path, output_path = sys.argv[1:]
+with open(evidence_path, encoding="utf-8") as handle:
+    evidence = json.load(handle)
+with open(payload_path, encoding="utf-8") as handle:
+    attestation = json.load(handle)
+with open(signature_path, "rb") as handle:
+    attestation["signature"] = base64.urlsafe_b64encode(handle.read()).rstrip(b"=").decode()
+evidence["acp_negative_observation_attestation"] = attestation
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(evidence, handle, sort_keys=True)
+PY
+done
+python3 - "$scratch/evidence.json" "$scratch/evidence.json.observer-forged-signature" \
+  "$scratch/evidence.json.forged-positive-control" <<'PY'
+import json
+import sys
+
+input_path, output_path, forged_positive_path = sys.argv[1:]
+with open(input_path, encoding="utf-8") as handle:
+    evidence = json.load(handle)
+evidence["acp_negative_observation_attestation"]["signature"] = "A" * 86
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(evidence, handle, sort_keys=True)
+with open(input_path, encoding="utf-8") as handle:
+    evidence = json.load(handle)
+evidence["acp_positive_reply_event"]["content"] += " forged"
+with open(forged_positive_path, "w", encoding="utf-8") as handle:
+    json.dump(evidence, handle, sort_keys=True)
 PY
 
 # A real immutable image and a valid, unrelated external attestor must not make
@@ -412,6 +923,13 @@ mutated["external_dispatcher_tool_policy"]["attestor_public_key"] = (
     "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
 )
 (root / "attestor.json").write_text(json.dumps(mutated, sort_keys=True), encoding="utf-8")
+mutated = json.loads(json.dumps(manifest))
+mutated["external_acp_observer"]["public_key"] = (
+    "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+)
+(root / "acp-observer.json").write_text(
+    json.dumps(mutated, sort_keys=True), encoding="utf-8"
+)
 PY
 for sample_manifest in "$scratch"/sample-identities/*.json; do
   if python3 "$root/stock-buzz-gate.py" validate --manifest "$sample_manifest" \
@@ -431,14 +949,156 @@ python3 "$root/stock-buzz-gate.py" validate --manifest "$scratch/manifest.json" 
   --acp-config "specialist=$scratch/specialist-acp.toml" \
   --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
   "${runtime_args[@]}" >/dev/null
+python3 - "$scratch/manifest.json" "$scratch/manifest.v2.json" \
+  "$scratch/manifest.missing-observer.json" "$scratch/manifest.shared-observer.json" \
+  "$scratch/manifest.wrong-observer-usage.json" "$scratch/manifest.widened-top.json" <<'PY'
+import copy
+import json
+import sys
+
+source, v2_path, missing_path, shared_path, usage_path, widened_path = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+mutated = copy.deepcopy(manifest)
+mutated["schema"] = "snagline.stock-buzz.deployment.v2"
+with open(v2_path, "w", encoding="utf-8") as handle:
+    json.dump(mutated, handle)
+mutated = copy.deepcopy(manifest)
+del mutated["external_acp_observer"]
+with open(missing_path, "w", encoding="utf-8") as handle:
+    json.dump(mutated, handle)
+mutated = copy.deepcopy(manifest)
+mutated["external_acp_observer"]["key_id"] = mutated["external_dispatcher_tool_policy"]["attestor_key_id"]
+mutated["external_acp_observer"]["public_key"] = mutated["external_dispatcher_tool_policy"]["attestor_public_key"]
+with open(shared_path, "w", encoding="utf-8") as handle:
+    json.dump(mutated, handle)
+mutated = copy.deepcopy(manifest)
+mutated["external_acp_observer"]["usage"] = "dispatcher-policy"
+with open(usage_path, "w", encoding="utf-8") as handle:
+    json.dump(mutated, handle)
+mutated = copy.deepcopy(manifest)
+mutated["unexpected"] = True
+with open(widened_path, "w", encoding="utf-8") as handle:
+    json.dump(mutated, handle)
+PY
+for rejected_manifest in "$scratch/manifest.v2.json" "$scratch/manifest.missing-observer.json" "$scratch/manifest.shared-observer.json" "$scratch/manifest.wrong-observer-usage.json" "$scratch/manifest.widened-top.json"; do
+  if python3 "$root/stock-buzz-gate.py" validate --manifest "$rejected_manifest" \
+    --acp-config "specialist=$scratch/specialist-acp.toml" \
+    --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
+    "${runtime_args[@]}" >/dev/null; then
+    echo "obsolete or non-independent observer manifest unexpectedly passed" >&2
+    exit 1
+  fi
+done
+ln -s "$scratch/specialist-acp.toml" "$scratch/specialist-acp-link.toml"
+if python3 "$root/stock-buzz-gate.py" validate --manifest "$scratch/manifest.json" \
+  --acp-config "specialist=$scratch/specialist-acp-link.toml" \
+  --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
+  "${runtime_args[@]}" >/dev/null; then
+  echo "symlink ACP config unexpectedly passed" >&2
+  exit 1
+fi
+mkdir "$scratch/nonregular-acp-env"
+if python3 "$root/stock-buzz-gate.py" validate --manifest "$scratch/manifest.json" \
+  --acp-config "specialist=$scratch/specialist-acp.toml" \
+  --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
+  --acp-runtime-env "specialist=$scratch/nonregular-acp-env" \
+  --acp-runtime-env "dispatcher=$scratch/dispatcher-acp.env" >/dev/null; then
+  echo "non-regular ACP runtime environment unexpectedly passed" >&2
+  exit 1
+fi
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "live gate unexpectedly passed without live evidence" >&2
   exit 1
 fi
 python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null
+if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  echo "live gate unexpectedly passed without a fresh observer challenge" >&2
+  exit 1
+fi
+if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" \
+  --observer-challenge 6666666666666666666666666666666666666666666666666666666666666666 >/dev/null; then
+  echo "live gate unexpectedly passed with a mismatched observer challenge" >&2
+  exit 1
+fi
+python3 - "$scratch/evidence.json" "$scratch/evidence.v2.json" <<'PY'
+import json
+import sys
+
+source, output = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    evidence = json.load(handle)
+evidence["schema"] = "snagline.stock-buzz.live-evidence.v2"
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(evidence, handle)
+PY
+python3 - "$scratch/manifest.json" "$scratch/manifest.duplicate-key.json" \
+  "$scratch/evidence.json" "$scratch/evidence.duplicate-key.json" \
+  "$scratch/evidence.widened-top.json" "$scratch/manifest.nested-duplicate-key.json" \
+  "$scratch/evidence.nested-duplicate-key.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest_path, duplicate_manifest_path, evidence_path, duplicate_evidence_path, widened_path, nested_manifest_path, nested_evidence_path = map(
+    pathlib.Path, sys.argv[1:]
+)
+manifest_text = manifest_path.read_text(encoding="utf-8")
+duplicate_manifest_path.write_text(
+    manifest_text.replace('"schema":', '"schema":"duplicate","schema":', 1),
+    encoding="utf-8",
+)
+nested_manifest_path.write_text(
+    manifest_text.replace(
+        '"external_acp_observer": {',
+        '"external_acp_observer":{"usage":"duplicate",',
+        1,
+    ),
+    encoding="utf-8",
+)
+evidence_text = evidence_path.read_text(encoding="utf-8")
+duplicate_evidence_path.write_text(
+    evidence_text.replace('"schema":', '"schema":"duplicate","schema":', 1),
+    encoding="utf-8",
+)
+nested_evidence_path.write_text(
+    evidence_text.replace(
+        '"acp_negative_observation_attestation": {',
+        '"acp_negative_observation_attestation":{"schema":"duplicate",',
+        1,
+    ),
+    encoding="utf-8",
+)
+evidence = json.loads(evidence_text)
+evidence["unexpected"] = True
+widened_path.write_text(json.dumps(evidence), encoding="utf-8")
+PY
+for duplicate_manifest in "$scratch/manifest.duplicate-key.json" "$scratch/manifest.nested-duplicate-key.json"; do
+  if python3 "$root/stock-buzz-gate.py" validate --manifest "$duplicate_manifest" \
+    --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+    echo "duplicate-key manifest unexpectedly passed" >&2
+    exit 1
+  fi
+done
+for rejected_evidence in "$scratch/evidence.duplicate-key.json" "$scratch/evidence.nested-duplicate-key.json" "$scratch/evidence.widened-top.json"; do
+  if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$rejected_evidence" \
+    --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
+    "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
+    echo "duplicate-key or widened v3 evidence unexpectedly passed" >&2
+    exit 1
+  fi
+done
+if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.v2.json" \
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
+  echo "obsolete v2 live evidence unexpectedly passed" >&2
+  exit 1
+fi
 "$root/run-stock-buzz-live-gate.sh" --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
+  "${live_args[@]}" \
   --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" \
   "${runtime_args[@]}" >/dev/null
 
@@ -447,7 +1107,7 @@ assert_live_rejected() {
   local expected_error=$2
   local description=$3
   if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$evidence_path" \
-    --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" \
+    --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" \
     >"$scratch/nip-oa-negative-result.json"; then
     echo "$description unexpectedly passed" >&2
     exit 1
@@ -478,6 +1138,150 @@ assert_live_rejected \
   "$scratch/evidence.json.unauthorized-profile-time" \
   "NIP-OA conditions do not authorize the signed profile event" \
   "NIP-OA created_at condition that excludes the profile"
+assert_live_rejected \
+  "$scratch/evidence.json.missing-negative-acp-attestation" \
+  "v3 live evidence fields are incomplete or widened" \
+  "live evidence missing the negative ACP observer attestation"
+assert_live_rejected \
+  "$scratch/evidence.json.boolean-only-negative-acp-attestation" \
+  "ACP negative observation attestation has invalid fields" \
+  "boolean-only negative ACP assertion"
+assert_live_rejected \
+  "$scratch/evidence.json.forged-negative-acp-trigger" \
+  "signed negative ACP trigger event id does not match" \
+  "forged negative ACP trigger event"
+assert_live_rejected \
+  "$scratch/evidence.json.same-owner-probe-profile" \
+  "negative ACP probe profile owner must be a distinct declared human" \
+  "cryptographically valid same-owner negative probe profile"
+assert_live_rejected \
+  "$scratch/evidence.json.forged-positive-control" \
+  "signed positive ACP reply event id does not match" \
+  "forged positive ACP control reply"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-unbound-manifest" \
+  "ACP negative observation is not bound to its observer, manifest, or Buzz image" \
+  "observer-signed negative ACP observation bound to another manifest"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-wrong-image" \
+  "ACP negative observation is not bound to its observer, manifest, or Buzz image" \
+  "observer-signed negative ACP observation bound to another Buzz image"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-wrong-acp-image" \
+  "ACP negative observation is not bound to its observer, manifest, or Buzz image" \
+  "observer-signed negative ACP observation bound to another ACP image"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-wrong-config" \
+  "ACP negative observation is not bound to the actual specialist ACP files" \
+  "observer-signed negative ACP observation bound to another ACP config"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-wrong-runtime-env" \
+  "ACP negative observation is not bound to the actual specialist ACP files" \
+  "observer-signed negative ACP observation bound to another runtime env"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-no-author-gate-rejection" \
+  "ACP negative observer did not attest an author-gate rejection" \
+  "negative observation without explicit author-gate rejection"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-same-owner-sibling" \
+  "ACP negative probe author is a same-owner sibling" \
+  "same-owner sibling used as negative ACP author"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-observed-turn" \
+  "external supervisor recorded or failed to exclude a negative-window invocation" \
+  "negative ACP observation containing a harness turn"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-observed-reply" \
+  "ACP negative observer reply query was incomplete, failed, widened, or found a reply" \
+  "negative ACP observation containing a reply"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-stale" \
+  "is outside the bounded evidence age" \
+  "stale observer-signed negative ACP observation"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-process-restarted" \
+  "ACP negative observation has a log gap, lag, reconnect, or process restart" \
+  "negative ACP observation spanning a specialist restart"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-log-gap" \
+  "ACP negative observation has a log gap, lag, reconnect, or process restart" \
+  "negative ACP observation with a debug-log capture gap"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-reply-query-error" \
+  "ACP negative observer reply query was incomplete, failed, widened, or found a reply" \
+  "negative ACP observation with a failed reply query"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-reply-query-start-not-after-window" \
+  "ACP negative observation window is not bound to the trigger and evidence timestamp" \
+  "reply query starting before the negative window ended"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-reply-query-completed-before-start" \
+  "ACP negative observation window is not bound to the trigger and evidence timestamp" \
+  "reply query completing before it started"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-other-process" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control from another specialist process"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-missing-turn-trigger" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control invocation missing its triggering event"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-wrong-launch" \
+  "ACP negative observation is not bound to the required secret-free debug launch" \
+  "negative ACP observation from different launch arguments"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-unexpected-behavior-env" \
+  "ACP negative observation normalized behavior environment differs or contains unexpected keys" \
+  "negative ACP observation with an unexpected behavior-affecting env key"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-stock-relay-observer" \
+  "ACP negative observation normalized behavior environment differs or contains unexpected keys" \
+  "negative ACP proof relying on stock relay observer mode"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-profile-timeout" \
+  "ACP negative probe profile lookup was incomplete, failed, or mismatched" \
+  "negative ACP profile lookup timeout"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-profile-widened-filter" \
+  "ACP negative probe profile lookup was incomplete, failed, or mismatched" \
+  "widened negative ACP profile lookup"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-profile-other-process" \
+  "ACP negative probe profile lookup was incomplete, failed, or mismatched" \
+  "profile lookup captured from another specialist process"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-supervisor-incomplete" \
+  "external supervisor recorded or failed to exclude a negative-window invocation" \
+  "incomplete external supervisor capture"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-accepted-too-late" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control accepted after the negative probe began"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-reply-too-late" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control reply observed after the negative probe began"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-trigger-reversed-lag" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control relay acceptance before signed trigger creation"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-positive-excessive-lag" \
+  "ACP positive control was not observed on the same uninterrupted process" \
+  "positive control with excessive observer lag"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-bad-nonce" \
+  "ACP negative observation must bind distinct run IDs and a canonical nonce" \
+  "negative ACP observation with a noncanonical anti-replay nonce"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-widened" \
+  "ACP negative observation attestation has invalid fields" \
+  "widened observer-signed negative ACP observation"
+assert_live_rejected \
+  "$scratch/evidence.json.observer-forged-signature" \
+  "ACP negative observation attestation signature does not verify" \
+  "forged negative ACP observer signature"
 
 # The live gate must verify the raw owner-signed NIP-OA credential itself.
 # A caller assertion cannot turn a forged signature into evidence of the
@@ -498,7 +1302,7 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(evidence, handle)
 PY
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "caller-asserted forged NIP-OA credential unexpectedly passed" >&2
   exit 1
 fi
@@ -522,7 +1326,7 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(evidence, handle)
 PY
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "forged agent profile event unexpectedly passed" >&2
   exit 1
 fi
@@ -551,7 +1355,7 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(evidence, handle)
 PY
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "agent profile with forged content and event id unexpectedly passed" >&2
   exit 1
 fi
@@ -723,7 +1527,7 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(evidence, handle)
 PY
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "stale signed evidence unexpectedly passed" >&2
   exit 1
 fi
@@ -769,7 +1573,7 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle)
 PY
 if python3 "$root/stock-buzz-gate.py" live --manifest "$scratch/manifest.json" --evidence "$scratch/evidence.json" \
-  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" >/dev/null; then
+  --acp-config "specialist=$scratch/specialist-acp.toml" --acp-config "dispatcher=$scratch/dispatcher-acp.toml" "${runtime_args[@]}" "${live_args[@]}" >/dev/null; then
   echo "widened tool policy unexpectedly passed" >&2
   exit 1
 fi
