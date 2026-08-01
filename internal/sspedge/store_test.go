@@ -259,6 +259,41 @@ func TestApplyVerifiedDuplicateExactAuthoritativeDeliveryIsIdempotent(t *testing
 	}
 }
 
+func TestPoolReplacedConnectionKeepsCrashSafetyPragmas(t *testing.T) {
+	db := newTestDB(t)
+	// Dropping idle connections forces database/sql to run the next statement
+	// on a brand-new physical connection, exactly as it would after a
+	// driver.ErrBadConn replacement.
+	db.sqlDB.SetMaxIdleConns(0)
+	defer db.sqlDB.SetMaxIdleConns(1)
+	var journal string
+	var synchronous, fullfsync, checkpointFullfsync, tempStore, memorySecurity int
+	for pragma, target := range map[string]any{
+		`PRAGMA journal_mode`:           &journal,
+		`PRAGMA synchronous`:            &synchronous,
+		`PRAGMA fullfsync`:              &fullfsync,
+		`PRAGMA checkpoint_fullfsync`:   &checkpointFullfsync,
+		`PRAGMA temp_store`:             &tempStore,
+		`PRAGMA cipher_memory_security`: &memorySecurity,
+	} {
+		if err := db.sqlDB.QueryRow(pragma).Scan(target); err != nil {
+			t.Fatalf("%s: %v", pragma, err)
+		}
+	}
+	if journal != "delete" || synchronous != 2 || fullfsync != 1 || checkpointFullfsync != 1 || tempStore != 2 || memorySecurity != 1 {
+		t.Fatalf("replaced connection lost crash-safety pragmas: journal=%s synchronous=%d fullfsync=%d checkpoint=%d temp_store=%d memory_security=%d",
+			journal, synchronous, fullfsync, checkpointFullfsync, tempStore, memorySecurity)
+	}
+}
+
+func TestConnectorFailsClosedWhenDestroyed(t *testing.T) {
+	db := newTestDB(t)
+	db.connector.destroy()
+	if _, err := db.connector.Connect(context.Background()); err == nil {
+		t.Fatal("destroyed connector produced a connection")
+	}
+}
+
 func TestApplyVerifiedRejectsConflictingBytesForAuthoritativeDelivery(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC()

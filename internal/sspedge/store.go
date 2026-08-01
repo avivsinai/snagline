@@ -99,19 +99,7 @@ func Open(ctx context.Context, opts OpenOptions) (*DB, error) {
 		_ = unix.Close(namespace.DirFD)
 		return nil, err
 	}
-	if err := db.configureDurability(ctx); err != nil {
-		_ = sqlDB.Close()
-		connector.destroy()
-		_ = unix.Close(namespace.DirFD)
-		return nil, err
-	}
 	if err := db.init(ctx); err != nil {
-		_ = sqlDB.Close()
-		connector.destroy()
-		_ = unix.Close(namespace.DirFD)
-		return nil, err
-	}
-	if err := db.requireCrashSafePragmas(); err != nil {
 		_ = sqlDB.Close()
 		connector.destroy()
 		_ = unix.Close(namespace.DirFD)
@@ -169,7 +157,90 @@ func (c *sqlCipherConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	// the mutable derived key in this connector, rather than passing a DSN to
 	// sql.Open, avoids retaining an immutable hex key in database/sql for the
 	// pool lifetime while still allowing its sole connection to be recreated.
-	return c.driver.Open(dsn.String())
+	conn, err := c.driver.Open(dsn.String())
+	if err != nil {
+		return nil, err
+	}
+	if err := applyConnectionSafetyPragmas(ctx, conn); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// applyConnectionSafetyPragmas enforces the connection-scoped crash-safety and
+// memory-hygiene pragmas that have no DSN equivalent on every physical
+// connection database/sql may create, and fails closed unless every required
+// value holds. The pending spool is the sole copy of unsent signed bytes; a
+// silently weakened replacement connection must be impossible.
+func applyConnectionSafetyPragmas(ctx context.Context, conn driver.Conn) error {
+	for _, pragma := range []string{
+		`PRAGMA fullfsync = ON`,
+		`PRAGMA checkpoint_fullfsync = ON`,
+		`PRAGMA temp_store = MEMORY`,
+		`PRAGMA cipher_memory_security = ON`,
+	} {
+		if err := connExec(ctx, conn, pragma); err != nil {
+			return fmt.Errorf("sspedge: configure encrypted SQLite durability: %w", err)
+		}
+	}
+	for _, requirement := range []struct{ pragma, want string }{
+		{`PRAGMA journal_mode`, "delete"},
+		{`PRAGMA synchronous`, "2"},
+		{`PRAGMA fullfsync`, "1"},
+		{`PRAGMA checkpoint_fullfsync`, "1"},
+		{`PRAGMA temp_store`, "2"},
+		{`PRAGMA cipher_memory_security`, "1"},
+	} {
+		got, err := connQueryValue(ctx, conn, requirement.pragma)
+		if err != nil {
+			return fmt.Errorf("sspedge: verify %s: %w", requirement.pragma, err)
+		}
+		if got != requirement.want {
+			return fmt.Errorf("sspedge: %s = %s, require %s", requirement.pragma, got, requirement.want)
+		}
+	}
+	return nil
+}
+
+func connExec(ctx context.Context, conn driver.Conn, statement string) error {
+	if execer, ok := conn.(driver.ExecerContext); ok {
+		_, err := execer.ExecContext(ctx, statement, nil)
+		return err
+	}
+	if execer, ok := conn.(driver.Execer); ok { //nolint:staticcheck // legacy driver fallback
+		_, err := execer.Exec(statement, nil)
+		return err
+	}
+	return errors.New("sspedge: SQLCipher connection cannot execute statements")
+}
+
+func connQueryValue(ctx context.Context, conn driver.Conn, statement string) (string, error) {
+	var rows driver.Rows
+	var err error
+	switch querier := conn.(type) {
+	case driver.QueryerContext:
+		rows, err = querier.QueryContext(ctx, statement, nil)
+	case driver.Queryer: //nolint:staticcheck // legacy driver fallback
+		rows, err = querier.Query(statement, nil)
+	default:
+		return "", errors.New("sspedge: SQLCipher connection cannot query pragmas")
+	}
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	values := make([]driver.Value, len(rows.Columns()))
+	if err := rows.Next(values); err != nil {
+		return "", err
+	}
+	if len(values) == 0 || values[0] == nil {
+		return "", errors.New("sspedge: pragma returned no value")
+	}
+	if raw, ok := values[0].([]byte); ok {
+		return string(raw), nil
+	}
+	return fmt.Sprint(values[0]), nil
 }
 
 func (c *sqlCipherConnector) Driver() driver.Driver { return c.driver }
@@ -231,44 +302,6 @@ func (d *DB) requireSQLCipher(ctx context.Context) error {
 	// schema is therefore mandatory before any migration or write.
 	if err := d.sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master`).Scan(&schemaCount); err != nil {
 		return fmt.Errorf("sspedge: validate SQLCipher database key: %w", err)
-	}
-	return nil
-}
-
-func (d *DB) configureDurability(ctx context.Context) error {
-	for _, pragma := range []string{
-		`PRAGMA fullfsync = ON`,
-		`PRAGMA checkpoint_fullfsync = ON`,
-		`PRAGMA temp_store = MEMORY`,
-		`PRAGMA cipher_memory_security = ON`,
-	} {
-		if _, err := d.sqlDB.ExecContext(ctx, pragma); err != nil {
-			return fmt.Errorf("sspedge: configure encrypted SQLite durability: %w", err)
-		}
-	}
-	return nil
-}
-
-func (d *DB) requireCrashSafePragmas() error {
-	var journal string
-	var synchronous, fullfsync, checkpointFullfsync, tempStore int
-	if err := d.sqlDB.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil {
-		return err
-	}
-	if err := d.sqlDB.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
-		return err
-	}
-	if err := d.sqlDB.QueryRow(`PRAGMA fullfsync`).Scan(&fullfsync); err != nil {
-		return err
-	}
-	if err := d.sqlDB.QueryRow(`PRAGMA checkpoint_fullfsync`).Scan(&checkpointFullfsync); err != nil {
-		return err
-	}
-	if err := d.sqlDB.QueryRow(`PRAGMA temp_store`).Scan(&tempStore); err != nil {
-		return err
-	}
-	if journal != "delete" || synchronous != 2 || fullfsync != 1 || checkpointFullfsync != 1 || tempStore != 2 {
-		return errors.New("sspedge: encrypted SQLite crash-safe durability is unavailable")
 	}
 	return nil
 }
