@@ -9,7 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 var ErrRejected = errors.New("securefile: private file rejected")
@@ -37,6 +40,24 @@ func ReadRegularBounded(path string, max int64) ([]byte, error) {
 	return readRegularBounded(path, max, false)
 }
 
+// ReadPrivateAt applies the same rules as ReadPrivateBounded to base opened
+// relative to dirFD, for callers that reached base's directory through their
+// own validated descriptor and must not hand a pathname back to the kernel
+// to reopen. base must name an entry directly in that directory, so this
+// package still owns what a private file must satisfy while the caller owns
+// how the directory was reached.
+func ReadPrivateAt(dirFD int, base string, max int64) ([]byte, error) {
+	if base == "" || base == "." || base == ".." || max <= 0 ||
+		strings.ContainsRune(base, filepath.Separator) {
+		return nil, ErrRejected
+	}
+	leafFD, err := unix.Openat(dirFD, base, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, ErrRejected
+	}
+	return readOpenFile(os.NewFile(uintptr(leafFD), base), max, true)
+}
+
 func readRegularBounded(path string, max int64, private bool) ([]byte, error) {
 	if !filepath.IsAbs(path) || max <= 0 {
 		return nil, ErrRejected
@@ -45,6 +66,10 @@ func readRegularBounded(path string, max int64, private bool) ([]byte, error) {
 	if err != nil {
 		return nil, ErrRejected
 	}
+	return readOpenFile(file, max, private)
+}
+
+func readOpenFile(file *os.File, max int64, private bool) ([]byte, error) {
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > max {
