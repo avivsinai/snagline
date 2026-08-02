@@ -12,7 +12,10 @@ import (
 	"github.com/avivsinai/snagline/internal/securefile"
 )
 
-const maxPEMBytes int64 = 64 << 10
+const (
+	maxPEMBytes    int64 = 64 << 10
+	signingKeyName       = "ed25519 signing key"
+)
 
 type Ed25519SigningKey struct {
 	privateKey ed25519.PrivateKey
@@ -78,13 +81,31 @@ func (key Ed25519SigningKey) Sign(message []byte) ([]byte, error) {
 }
 
 func LoadEd25519SigningKey(path string) (Ed25519SigningKey, error) {
-	block, err := loadEd25519PEMBlock(path, "ed25519 signing key", "PRIVATE KEY", true)
+	block, err := loadEd25519PEMBlock(path, signingKeyName, "PRIVATE KEY", true)
 	if err != nil {
 		return Ed25519SigningKey{}, err
 	}
+	return signingKeyFromPKCS8(block)
+}
+
+// ParseEd25519SigningKeyPEM applies the same signing-key rules
+// LoadEd25519SigningKey applies, to bytes a caller has already read from
+// custody-controlled storage. It exists for callers that must reach the file
+// through their own validated directory descriptor rather than by pathname,
+// so that this package stays the only place that decides what a signing key
+// PEM must look like.
+func ParseEd25519SigningKeyPEM(raw []byte) (Ed25519SigningKey, error) {
+	block, err := decodeEd25519PEMBlock(raw, signingKeyName, "PRIVATE KEY")
+	if err != nil {
+		return Ed25519SigningKey{}, err
+	}
+	return signingKeyFromPKCS8(block)
+}
+
+func signingKeyFromPKCS8(block *pem.Block) (Ed25519SigningKey, error) {
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return Ed25519SigningKey{}, fmt.Errorf("parse ed25519 signing key: %w", err)
+		return Ed25519SigningKey{}, fmt.Errorf("parse %s: %w", signingKeyName, err)
 	}
 	privateKey, ok := parsed.(ed25519.PrivateKey)
 	if !ok {
@@ -122,6 +143,10 @@ func loadEd25519PEMBlock(path, keyName, wantType string, private bool) (*pem.Blo
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", keyName, err)
 	}
+	return decodeEd25519PEMBlock(raw, keyName, wantType)
+}
+
+func decodeEd25519PEMBlock(raw []byte, keyName, wantType string) (*pem.Block, error) {
 	block, rest := pem.Decode(raw)
 	if block == nil || len(strings.TrimSpace(string(rest))) != 0 {
 		return nil, fmt.Errorf("%s must contain exactly one PEM block", keyName)
