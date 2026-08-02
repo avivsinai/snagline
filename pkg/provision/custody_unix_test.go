@@ -245,15 +245,19 @@ func TestWriteToFailsWhenTheNamedLeafChanges(t *testing.T) {
 	real := realCustodySyscalls(t)
 	dir := custodyTempDir(t)
 	path := filepath.Join(dir, "signing.pem")
+	replacementPath := filepath.Join(dir, "replacement.pem")
 	replacement := []byte("not our key")
 	syncDir = func(dirFD int) error {
 		if err := real.syncDir(dirFD); err != nil {
 			return err
 		}
+		if err := os.WriteFile(replacementPath, replacement, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, replacement, 0o600); err != nil {
+		if err := os.Rename(replacementPath, path); err != nil {
 			t.Fatal(err)
 		}
 		return nil
