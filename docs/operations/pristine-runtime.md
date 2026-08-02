@@ -25,7 +25,9 @@ not satisfy this separation. Configure and verify a distinct numeric runtime
 UID for every deployed control, delivery, edge generation, dispatcher, and
 projector, with exclusive mounts and socket directories. `snagline-front` has
 no container target: run the release binary on the edge host under the matching
-edge UID so AMQ mode can execute the operator-pinned host AMQ binary.
+edge UID so AMQ (Agent Message Queue, an external operator-pinned
+agent-messaging CLI the front process invokes; not a message broker) mode can
+execute the operator-pinned host AMQ binary.
 Release container targets are attached to the single draft-then-publish GitHub
 release as loadable `*.docker.tar` assets. They are built and run before the
 release becomes visible; Snagline does not publish partially complete GHCR tag

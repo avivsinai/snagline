@@ -78,7 +78,9 @@ machine context that cannot safely become global collaboration data.
    Reusing or decreasing a generation fails closed.
 
 The generation fences stale credentials and stale delivery acknowledgements.
-Private AMQ/session/provider bindings are not recoverable from PostgreSQL. They
+Private AMQ (Agent Message Queue, an external operator-pinned agent-messaging
+CLI the front process invokes; not a message broker)/session/provider
+bindings are not recoverable from PostgreSQL. They
 require a local encrypted backup or explicit destructive re-enrollment.
 
 ### Open a case

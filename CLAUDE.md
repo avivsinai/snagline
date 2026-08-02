@@ -43,8 +43,10 @@ The only shipped command roles are:
 - `snagline-delivery`: PostgreSQL-outbox publisher to bounded JetStream.
 - `snagline-edge`: local provider-neutral Unix-socket API and encrypted edge
   projection.
-- `snagline-front`: one-shot CLI or AMQ delivery through the edge's private
-  Unix-socket API, running under the matching edge service UID.
+- `snagline-front`: one-shot CLI or AMQ (Agent Message Queue, an external
+  operator-pinned agent-messaging CLI the front process invokes; not a
+  message broker) delivery through the edge's private Unix-socket API,
+  running under the matching edge service UID.
 - `snagline-dispatcher`: one-shot, narrow final-advice submitter.
 - `snagline-buzz-projector`: read-only PostgreSQL-to-stock-Buzz projection.
 - `snagline-ssp-verify`: strict SSP fixture and artifact verifier.
@@ -55,10 +57,10 @@ gate needs a separately deployed stock instance and immutable image digest.
 
 ## Engineering rules
 
-- Orient first: inspect `git status --short --branch`, this guide, and active
-  AMQ messages.  Use an isolated worktree for branch work.
-- Preserve unrelated work.  Do not reset, stash, switch shared branches, or
-  stage another agent's changes.
+- Orient first: inspect `git status --short --branch` and this guide before
+  starting work.  Use a separate branch for non-trivial changes.
+- Preserve unrelated work.  Do not reset, stash, or discard changes you did
+  not make.
 - Make the smallest composable change in the owning layer.  Verify the real
   invariant with focused tests, then the relevant wider gate.
 - Treat filesystem descriptor validation followed by pathname reuse as a
@@ -70,6 +72,5 @@ gate needs a separately deployed stock instance and immutable image digest.
 - Keep PostgreSQL authority, JetStream delivery, edge projection, and Buzz
   projection separate.  Do not introduce dual authority, hidden cursors, or
   a transport-to-effect bridge.
-- Coordinate with peers over AMQ; messages should name paths, not paste file
-  contents.  Request peer review of the exact tree before committing.  Do not
-  commit, push, deploy, or merge without the required authority.
+- Open a pull request against `main` for review.  CI must pass `make verify`,
+  and a maintainer must approve the change before it merges.
