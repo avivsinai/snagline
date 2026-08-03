@@ -79,5 +79,11 @@ gate needs a separately deployed stock instance and immutable image digest.
 - Keep PostgreSQL authority, JetStream delivery, edge projection, and Buzz
   projection separate.  Do not introduce dual authority, hidden cursors, or
   a transport-to-effect bridge.
+<<<<<<< HEAD
 - Open a pull request against `main` for review.  CI must pass `make verify`,
   and a maintainer must approve the change before it merges.
+=======
+- Coordinate with peers over AMQ; messages should name paths, not paste file
+  contents.  Do not commit, push, deploy, or merge without the required
+  authority.
+>>>>>>> a858b60 (docs: drop exact-tree review ceremony from AMQ coordination rule)
