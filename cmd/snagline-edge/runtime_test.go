@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +182,35 @@ func setValidEdgeEnvironment(t *testing.T) {
 		"SNAGLINE_EDGE_SOCKET": "/run/snagline/edge.sock", "SNAGLINE_EDGE_OPS_SOCKET": "/run/snagline/edge.ops.sock", "SNAGLINE_EDGE_TENANT": "tenant-a", "SNAGLINE_EDGE_ID": "edge-a", "SNAGLINE_EDGE_GENERATION": "2", "SNAGLINE_EDGE_PRINCIPAL_ID": "edge-principal", "SNAGLINE_EDGE_AUTHOR_KEY_ID": "edge-key", "SNAGLINE_EDGE_SIGNING_KEY": "/run/secrets/edge-key.pem", "SNAGLINE_EDGE_REGISTRY_ROOT_KEY": "/run/secrets/registry-root.pem", "SNAGLINE_EDGE_REGISTRY_ROOT_KEY_ID": "registry-root-1", "SNAGLINE_EDGE_DB": "/var/lib/snagline/edge.db", "SNAGLINE_EDGE_DB_KEY": "/run/secrets/edge-db.key", "SNAGLINE_EDGE_CONTROL_URL": "https://control.example", "SNAGLINE_EDGE_TLS_CERT": "/run/secrets/edge.crt", "SNAGLINE_EDGE_TLS_KEY": "/run/secrets/edge.key", "SNAGLINE_EDGE_CONTROL_CA": "/run/secrets/control-ca.pem", "SNAGLINE_EDGE_NATS_URL": "tls://nats.example:4222", "SNAGLINE_EDGE_NATS_CREDENTIALS_FILE": "/run/secrets/nats.creds", "SNAGLINE_EDGE_NATS_CA_FILE": "/run/secrets/nats-ca.pem", "SNAGLINE_EDGE_ENVELOPE_TTL": "1h",
 	} {
 		t.Setenv(key, value)
+	}
+}
+
+// A failed bind must not put the configured socket pathname into the error, and
+// therefore not into the operator log main.go writes. This fixture deliberately
+// reaches net.Listen rather than failing earlier in prepareSocketNamespace: the
+// parent is a valid current-user-owned 0700 directory, and the basename is long
+// enough to exceed the sun_path limit, so net.Listen fails with a *net.OpError
+// whose Addr is the full socket path. Without sanitization that path reaches the
+// caller verbatim.
+func TestServeEdgeSocketBindFailureDoesNotLeakConfiguredPath(t *testing.T) {
+	const marker = "tenant-acme-secret-edge-name"
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("chmod parent: %v", err)
+	}
+	socket := filepath.Join(parent, marker+"-"+strings.Repeat("x", 120)+".sock")
+
+	err := serveEdgeSocket(context.Background(), socket, nil)
+	if err == nil {
+		t.Fatalf("bind with an overlong socket name unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), marker) {
+		t.Fatalf("error leaked the configured socket path: %v", err)
+	}
+	if strings.Contains(err.Error(), parent) {
+		t.Fatalf("error leaked the socket parent directory: %v", err)
+	}
+	if err.Error() != "edge local API socket unavailable" {
+		t.Fatalf("unexpected error text %q", err.Error())
 	}
 }
