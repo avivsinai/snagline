@@ -3,15 +3,54 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/avivsinai/snagline/internal/edge"
+	"github.com/avivsinai/snagline/internal/edgeclient"
 	"github.com/avivsinai/snagline/internal/sspedge"
 )
+
+func TestEdgeHandlerAndClientShareExactCaseWireContract(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "sledgewire-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "edge.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &fakeEdgeService{advice: []edge.AdviceView{{AdviceID: "advice-1", CaseID: "case-1", Text: "confidential", ReceivedAt: time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)}}}
+	server := httptest.NewUnstartedServer(newHandler(svc))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	client, err := edgeclient.New(edgeclient.Config{Socket: socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := edgeclient.OpenCaseRequest{CaseID: "case-1", Domain: "runtime", Summary: "secret", PublicSummary: "public", ContextManifest: testCommitment("a"), Registry: edgeclient.RegistryCoordinates{RoutingEpoch: 1, Revision: 2, Hash: testCommitment("b")}}
+	opened, err := client.OpenCase(context.Background(), request)
+	if err != nil || !opened.AcceptedRemote || svc.request.CaseID != "case-1" {
+		t.Fatalf("opened=%#v request=%#v err=%v", opened, svc.request, err)
+	}
+	record, err := client.GetCase(context.Background(), "case-1")
+	if err != nil || record.Summary != "secret" || record.Registry.Revision != 2 {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	advice, err := client.ListAdvice(context.Background(), "case-1")
+	if err != nil || len(advice) != 1 || advice[0].Text != "confidential" {
+		t.Fatalf("advice=%#v err=%v", advice, err)
+	}
+}
 
 func TestEdgeHandlerRejectsUnknownOpenCaseFields(t *testing.T) {
 	h := newHandler(&fakeEdgeService{})
@@ -93,23 +132,33 @@ type fakeEdgeService struct {
 	claimedTTL   time.Duration
 	claimedLimit int
 	ack          sspedge.FrontReceipt
+	request      edge.OpenCaseRequest
+	advice       []edge.AdviceView
 }
 
-func (f *fakeEdgeService) OpenCase(context.Context, edge.OpenCaseRequest) (edge.CaseSubmission, error) {
+func (f *fakeEdgeService) OpenCase(_ context.Context, request edge.OpenCaseRequest) (edge.CaseSubmission, error) {
 	f.opened++
-	return edge.CaseSubmission{AcceptedRemote: true}, nil
+	f.request = request
+	return validCaseSubmission(request.CaseID), nil
 }
 func (f *fakeEdgeService) RetryCase(_ context.Context, id string) (edge.CaseSubmission, error) {
 	f.retried = id
-	return edge.CaseSubmission{CaseID: id, AcceptedRemote: true}, nil
+	return validCaseSubmission(id), nil
 }
-func (f *fakeEdgeService) GetCase(context.Context, string) (edge.CaseRecord, error) {
-	return edge.CaseRecord{CaseID: "case-1"}, nil
+func (f *fakeEdgeService) GetCase(_ context.Context, id string) (edge.CaseRecord, error) {
+	return edge.CaseRecord{EnvelopeID: "env-1", CaseID: id, Commitment: testCommitment("c"), Summary: "secret", Registry: edge.RegistryCoordinates{RoutingEpoch: 1, Revision: 2, Hash: testCommitment("b")}, ExpiresAt: time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC), Committed: true}, nil
 }
 func (f *fakeEdgeService) ListAdvice(_ context.Context, id string) ([]edge.AdviceView, error) {
 	f.listed = id
-	return []edge.AdviceView{}, nil
+	return f.advice, nil
 }
+
+func validCaseSubmission(caseID string) edge.CaseSubmission {
+	commitment := testCommitment("c")
+	return edge.CaseSubmission{EnvelopeID: "env-1", CaseID: caseID, Commitment: commitment, AcceptedRemote: true, Receipt: edge.CommitReceipt{AuthorityID: "authority", Revision: 3, EnvelopeID: "env-1", Commitment: commitment}}
+}
+
+func testCommitment(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 func (f *fakeEdgeService) PresentAdvice(context.Context, string) (edge.AdviceView, error) {
 	return edge.AdviceView{}, nil
 }

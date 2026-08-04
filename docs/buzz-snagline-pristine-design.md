@@ -85,8 +85,10 @@ require a local encrypted backup or explicit destructive re-enrollment.
 
 ### Open a case
 
-1. A provider-neutral local front gives the edge bounded confidential detail,
-   an independently authored public summary, and a context-manifest commitment.
+1. The session-bound `snagline-case` adapter reads confidential detail and an
+   independently authored public summary from stdin, then combines them with
+   its private deployment-pinned socket, case, domain, context-manifest, and
+   registry binding. An agent cannot select another case or edge.
 2. The edge constructs and signs one `ssp.case.v1` envelope containing its
    `edge_id` and `generation`. Provider/session locators never enter SSP.
 3. The edge durably stores the exact signed bytes in its encrypted pending spool

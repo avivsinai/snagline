@@ -17,35 +17,40 @@ final advice per case.  There is no editing and no second answer.  "At most one"
 is a constraint, not a promise: nothing guarantees that any advice will arrive,
 so an integrator must handle a case that is never answered.
 
-## There is no shipped client for opening a case, and your agent must not be one
+## Use the shipped session-bound case adapter; never give an agent the socket
 
-`snagline-front` does not open cases.  It claims and renders pending deliveries
-for an owner, one shot, in either `cli` or `amq` mode.  `snagline-edge` does
-implement `POST /v1/cases` — the route exists and works — but **no shipped user-
-or agent-facing client invokes it.**  The server side is there; the caller is not.
+`snagline-case` is the shipped one-shot adapter for `open`, `retry`, `get`, and
+`advice`. It reads one private deployment-owned binding at the fixed path
+`/run/snagline-case/session.json`. That binding pins one absolute edge socket,
+one case ID, the domain, context commitment, and registry generation. There is
+no flag or environment variable by which an agent can select any of them.
 
 That gap cannot be closed by pointing your agent at the socket.  The socket's
 only local access control is filesystem permissions, so **any process under the
 edge service UID has the full local API** — and the runtime rules forbid giving
 that UID to an agent.  [`docs/operations/pristine-runtime.md`](operations/pristine-runtime.md)
-states that an edge UID must not be shared with an agent runtime, and that
-besides the edge service itself the only same-UID helper is the shipped, bounded
-`snagline-front`.
+states that an edge UID must not be shared with an agent runtime. Only the
+shipped bounded `snagline-front` and `snagline-case` helpers may run under it.
 [`deploy/config/README.md`](../deploy/config/README.md) is equally explicit that
 the front is trusted edge code, **not an agent or model process**.
 
-So the integration shape is not agent-to-socket.  It is:
+The integration shape is not agent-to-socket. It is:
 
-- a **small trusted adapter**, written and reviewed as edge code, may run under
-  the edge UID and speak to the socket; and
-- your agent talks to that adapter across a boundary the deployment owns, never
-  to the socket directly.
+- the deployment mounts exactly one private session binding and runs
+  `snagline-case` under the matching edge UID; and
+- the agent receives only the four bounded adapter operations, never the edge
+  UID, socket, binding path, or arbitrary process arguments.
 
-That adapter does not exist yet.  If you need to open cases, it has to be built
-and reviewed to the same standard as the other edge code — say so plainly rather
-than granting a model the edge UID because it is the shortest path.  Everything
-below documents what such an adapter would call; it is not a licence for the
-agent to call it.
+For `open`, send exactly one JSON object on standard input:
+
+```json
+{"summary":"confidential detail","public_summary":"intentional public disclosure"}
+```
+
+Never put the confidential summary in argv. `retry`, `get`, and `advice` ignore
+stdin and accept no additional arguments. Adapter output contains receipt/status metadata only: it
+never returns the stored confidential case `Summary` or advice `Text`.
+`snagline-front` is the separate trusted delivery path for inert advice text.
 
 ## The edge local API
 
@@ -132,16 +137,16 @@ inventing plausible values is how you end up debugging the wrong layer.
 ### Reading advice
 
 `snagline-front` is the shipped, trusted way to claim and render deliveries.
-Besides the edge service itself, it is the only separately invokable component
-permitted to run under the edge UID:
+It and `snagline-case` are the only separately invokable components permitted
+to run under the edge UID:
 
 ```
 snagline-front --mode cli --socket /run/snagline-edge-EDGE_ID/edge.sock --owner <identity>
 ```
 
-A trusted adapter may instead poll `GET /v1/cases/{caseID}/advice` directly.
-Your agent should be consuming whatever that adapter or `snagline-front`
-produces, not holding the socket itself.
+`snagline-case advice` may poll availability for its one bound case, but returns
+only advice IDs and timestamps. Your agent consumes advice text from the
+operator-run `snagline-front`, not from the edge socket or case adapter.
 
 `--lease` must be between 1s and 15m *and a whole number of seconds* — a
 fractional lease such as `90500ms` is rejected.  `--operation-timeout` must be at

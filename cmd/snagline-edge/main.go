@@ -52,6 +52,57 @@ type apiError struct {
 	Code string `json:"code"`
 }
 
+type openCaseRequestWire struct {
+	CaseID          string `json:"case_id"`
+	Domain          string `json:"domain"`
+	Summary         string `json:"summary"`
+	PublicSummary   string `json:"public_summary"`
+	ContextManifest string `json:"context_manifest"`
+	Registry        struct {
+		RoutingEpoch int64  `json:"routing_epoch"`
+		Revision     int64  `json:"revision"`
+		Hash         string `json:"hash"`
+	} `json:"registry"`
+}
+
+type commitReceiptResponseWire struct {
+	AuthorityID string `json:"AuthorityID"`
+	Revision    int64  `json:"Revision"`
+	EnvelopeID  string `json:"EnvelopeID"`
+	Commitment  string `json:"Commitment"`
+}
+
+type caseSubmissionResponseWire struct {
+	EnvelopeID     string                    `json:"EnvelopeID"`
+	CaseID         string                    `json:"CaseID"`
+	Commitment     string                    `json:"Commitment"`
+	AcceptedRemote bool                      `json:"AcceptedRemote"`
+	Receipt        commitReceiptResponseWire `json:"Receipt"`
+}
+
+type registryResponseWire struct {
+	RoutingEpoch int64  `json:"RoutingEpoch"`
+	Revision     int64  `json:"Revision"`
+	Hash         string `json:"Hash"`
+}
+
+type caseRecordResponseWire struct {
+	EnvelopeID string               `json:"EnvelopeID"`
+	CaseID     string               `json:"CaseID"`
+	Commitment string               `json:"Commitment"`
+	Summary    string               `json:"Summary"`
+	Registry   registryResponseWire `json:"Registry"`
+	ExpiresAt  time.Time            `json:"ExpiresAt"`
+	Committed  bool                 `json:"Committed"`
+}
+
+type adviceResponseWire struct {
+	AdviceID   string    `json:"AdviceID"`
+	CaseID     string    `json:"CaseID"`
+	Text       string    `json:"Text"`
+	ReceivedAt time.Time `json:"ReceivedAt"`
+}
+
 func main() {
 	config, err := parseEdgeRuntimeConfig(os.Args[1:])
 	if err != nil {
@@ -96,18 +147,7 @@ func run(args []string, factory func() (edgeAPI, error), stdout io.Writer) int {
 func newHandler(service edgeAPI) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			CaseID          string `json:"case_id"`
-			Domain          string `json:"domain"`
-			Summary         string `json:"summary"`
-			PublicSummary   string `json:"public_summary"`
-			ContextManifest string `json:"context_manifest"`
-			Registry        struct {
-				RoutingEpoch int64  `json:"routing_epoch"`
-				Revision     int64  `json:"revision"`
-				Hash         string `json:"hash"`
-			} `json:"registry"`
-		}
+		var input openCaseRequestWire
 		if err := decodeJSON(r, &input); err != nil {
 			writeHTTP(w, http.StatusBadRequest, apiError{OK: false, Code: "invalid_request"})
 			return
@@ -117,7 +157,7 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusUnprocessableEntity, apiError{OK: false, Code: "case_rejected"})
 			return
 		}
-		writeHTTP(w, http.StatusAccepted, result)
+		writeHTTP(w, http.StatusAccepted, caseSubmissionResponse(result))
 	})
 	mux.HandleFunc("POST /v1/cases/{caseID}/retry", func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -131,7 +171,7 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusUnprocessableEntity, apiError{OK: false, Code: "retry_rejected"})
 			return
 		}
-		writeHTTP(w, http.StatusAccepted, result)
+		writeHTTP(w, http.StatusAccepted, caseSubmissionResponse(result))
 	})
 	mux.HandleFunc("POST /v1/fronts/{front}/claims", func(w http.ResponseWriter, r *http.Request) {
 		front, ok := parseFront(r.PathValue("front"))
@@ -213,7 +253,11 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusNotFound, apiError{OK: false, Code: "not_found"})
 			return
 		}
-		writeHTTP(w, http.StatusOK, result)
+		wire := make([]adviceResponseWire, 0, len(result))
+		for _, advice := range result {
+			wire = append(wire, adviceResponse(advice))
+		}
+		writeHTTP(w, http.StatusOK, wire)
 	})
 	mux.HandleFunc("GET /v1/cases/{caseID}", func(w http.ResponseWriter, r *http.Request) {
 		result, err := service.GetCase(r.Context(), r.PathValue("caseID"))
@@ -221,7 +265,7 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusNotFound, apiError{OK: false, Code: "not_found"})
 			return
 		}
-		writeHTTP(w, http.StatusOK, result)
+		writeHTTP(w, http.StatusOK, caseRecordResponse(result))
 	})
 	mux.HandleFunc("GET /v1/advice/{adviceID}", func(w http.ResponseWriter, r *http.Request) {
 		result, err := service.PresentAdvice(r.Context(), r.PathValue("adviceID"))
@@ -229,9 +273,23 @@ func newHandler(service edgeAPI) http.Handler {
 			writeHTTP(w, http.StatusNotFound, apiError{OK: false, Code: "not_found"})
 			return
 		}
-		writeHTTP(w, http.StatusOK, result)
+		writeHTTP(w, http.StatusOK, adviceResponse(result))
 	})
 	return mux
+}
+
+func caseSubmissionResponse(value edge.CaseSubmission) caseSubmissionResponseWire {
+	return caseSubmissionResponseWire{EnvelopeID: value.EnvelopeID, CaseID: value.CaseID, Commitment: value.Commitment, AcceptedRemote: value.AcceptedRemote,
+		Receipt: commitReceiptResponseWire{AuthorityID: value.Receipt.AuthorityID, Revision: value.Receipt.Revision, EnvelopeID: value.Receipt.EnvelopeID, Commitment: value.Receipt.Commitment}}
+}
+
+func caseRecordResponse(value edge.CaseRecord) caseRecordResponseWire {
+	return caseRecordResponseWire{EnvelopeID: value.EnvelopeID, CaseID: value.CaseID, Commitment: value.Commitment, Summary: value.Summary,
+		Registry: registryResponseWire{RoutingEpoch: value.Registry.RoutingEpoch, Revision: value.Registry.Revision, Hash: value.Registry.Hash}, ExpiresAt: value.ExpiresAt, Committed: value.Committed}
+}
+
+func adviceResponse(value edge.AdviceView) adviceResponseWire {
+	return adviceResponseWire{AdviceID: value.AdviceID, CaseID: value.CaseID, Text: value.Text, ReceivedAt: value.ReceivedAt}
 }
 
 func parseFront(value string) (sspedge.Front, bool) {

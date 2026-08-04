@@ -83,6 +83,10 @@ ENTRYPOINT ["/usr/local/bin/snagline-edge"]
 # the edge as the matching host service UID and, in AMQ mode, execute the
 # operator-pinned host AMQ binary. It remains available in release archives.
 
+FROM runtime-static AS case
+COPY --from=build /out/snagline-case /usr/local/bin/snagline-case
+ENTRYPOINT ["/usr/local/bin/snagline-case"]
+
 FROM runtime-sqlcipher AS dispatcher
 COPY --from=build /out/snagline-dispatcher /usr/local/bin/snagline-dispatcher
 ENTRYPOINT ["/usr/local/bin/snagline-dispatcher"]

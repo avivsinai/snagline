@@ -51,8 +51,9 @@ The only shipped command roles are:
   or its advice through the edge's private Unix-socket API, running under the
   matching edge service UID.  It has no SQLite, SSP, PostgreSQL, NATS, or Buzz
   access and performs no provider effect; an agent invokes it as a bounded
-  command rather than holding the edge UID itself.  Registry coordinates are
-  caller-supplied from deployment configuration.
+  command rather than holding the edge UID itself. Its fixed private session
+  binding pins the socket, case ID, domain, context commitment, and registry;
+  confidential open detail is stdin-only and reads never expose stored text.
 - `snagline-dispatcher`: one-shot, narrow final-advice submitter.
 - `snagline-buzz-projector`: read-only PostgreSQL-to-stock-Buzz projection.
 - `snagline-ssp-verify`: strict SSP fixture and artifact verifier.

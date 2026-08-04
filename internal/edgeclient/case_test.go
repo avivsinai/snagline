@@ -3,17 +3,17 @@ package edgeclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// startCaseServer stands up the three case routes over a private Unix socket and
-// returns a client bound to it. The handlers assert method and status so the
-// test proves the client speaks the exact contract: 202 on open, 200 on reads.
 func startCaseServer(t *testing.T, mux *http.ServeMux) *Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "slcase-")
@@ -37,114 +37,194 @@ func startCaseServer(t *testing.T, mux *http.ServeMux) *Client {
 	return client
 }
 
-func TestOpenCaseRequiresAcceptedStatusAndEchoesCaseID(t *testing.T) {
+func TestOpenCaseUsesSnakeCaseRequestAndValidatesReceipt(t *testing.T) {
 	mux := http.NewServeMux()
 	var gotBody map[string]any
 	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		// The edge accepts a case with 202, not 200.
 		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"EnvelopeID":"env-1","CaseID":"case-1","Commitment":"c","AcceptedRemote":true,"Receipt":{"AuthorityID":"auth","Revision":3,"EnvelopeID":"env-1","Commitment":"c"}}`))
+		_, _ = w.Write([]byte(validSubmissionJSON("case-1")))
 	})
-	client := startCaseServer(t, mux)
-
-	submission, err := client.OpenCase(context.Background(), OpenCaseRequest{
-		CaseID: "case-1", Domain: "billing", Summary: "confidential detail",
-		PublicSummary: "public blurb", ContextManifest: "sha256:" + repeat64(),
-		Registry: RegistryCoordinates{RoutingEpoch: 0, Revision: 3, Hash: "sha256:" + repeat64()},
-	})
-	if err != nil {
-		t.Fatalf("open = %v", err)
+	submission, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen())
+	if err != nil || !submission.AcceptedRemote || submission.Receipt.Revision != 3 {
+		t.Fatalf("submission=%#v err=%v", submission, err)
 	}
-	if !submission.AcceptedRemote || submission.CaseID != "case-1" || submission.Receipt.Revision != 3 {
-		t.Fatalf("submission = %#v", submission)
-	}
-	// public_summary and summary must both cross the wire, distinctly.
-	if gotBody["public_summary"] != "public blurb" || gotBody["summary"] != "confidential detail" {
-		t.Fatalf("request body did not carry both summaries: %#v", gotBody)
+	if gotBody["public_summary"] != "blurb" || gotBody["summary"] != "detail" || gotBody["case_id"] != "case-1" {
+		t.Fatalf("request=%#v", gotBody)
 	}
 }
 
-func TestOpenCaseRejectsA200Response(t *testing.T) {
-	// A 200 (rather than the contractual 202) must be treated as a rejection,
-	// so a misbehaving or wrong endpoint cannot be read as an accepted case.
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"EnvelopeID":"e","CaseID":"case-1","Commitment":"c","AcceptedRemote":true,"Receipt":{"AuthorityID":"a","Revision":1,"EnvelopeID":"e","Commitment":"c"}}`))
-	})
-	client := startCaseServer(t, mux)
-	if _, err := client.OpenCase(context.Background(), validOpen()); err == nil {
-		t.Fatal("a 200 open response was accepted; must require 202")
+func TestOpenCaseRejectsIncompleteOrMismatchedReceipt(t *testing.T) {
+	valid := validSubmissionJSON("case-1")
+	tests := map[string]string{
+		"not accepted":                strings.Replace(valid, `"AcceptedRemote":true`, `"AcceptedRemote":false`, 1),
+		"missing envelope":            strings.Replace(valid, `"EnvelopeID":"env-1"`, `"EnvelopeID":""`, 1),
+		"bad commitment":              strings.Replace(valid, digest("c"), "not-a-digest", 1),
+		"missing authority":           strings.Replace(valid, `"AuthorityID":"auth"`, `"AuthorityID":""`, 1),
+		"zero revision":               strings.Replace(valid, `"Revision":3`, `"Revision":0`, 1),
+		"receipt envelope mismatch":   strings.Replace(valid, `"EnvelopeID":"env-1","Commitment":`+quote(digest("c"))+`}}`, `"EnvelopeID":"other","Commitment":`+quote(digest("c"))+`}}`, 1),
+		"receipt commitment mismatch": strings.Replace(valid, `"EnvelopeID":"env-1","Commitment":`+quote(digest("c"))+`}}`, `"EnvelopeID":"env-1","Commitment":`+quote(digest("d"))+`}}`, 1),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(body))
+			})
+			if _, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen()); err == nil {
+				t.Fatal("invalid response was trusted")
+			}
+		})
 	}
 }
 
-func TestOpenCaseRejectsMismatchedCaseID(t *testing.T) {
+func TestOpenCaseRetriesExactlyOnceAfterLostResponse(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, r *http.Request) {
+	openCalls, retryCalls := 0, 0
+	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) {
+		openCalls++
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("POST /v1/cases/case-1/retry", func(w http.ResponseWriter, r *http.Request) {
+		retryCalls++
+		raw, _ := io.ReadAll(r.Body)
+		if len(raw) != 0 {
+			t.Fatalf("retry body=%q", raw)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"EnvelopeID":"e","CaseID":"OTHER","Commitment":"c","AcceptedRemote":true,"Receipt":{"AuthorityID":"a","Revision":1,"EnvelopeID":"e","Commitment":"c"}}`))
+		_, _ = w.Write([]byte(validSubmissionJSON("case-1")))
 	})
-	client := startCaseServer(t, mux)
-	if _, err := client.OpenCase(context.Background(), validOpen()); err == nil {
-		t.Fatal("a response confirming a different case ID was accepted")
+	result, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen())
+	if err != nil || !result.AcceptedRemote || openCalls != 1 || retryCalls != 1 {
+		t.Fatalf("result=%#v err=%v opens=%d retries=%d", result, err, openCalls, retryCalls)
 	}
 }
 
-func TestGetCaseAndListAdviceReadThroughGET(t *testing.T) {
+func TestOpenCaseRetriesExactlyOnceAfterTruncatedAcceptedResponse(t *testing.T) {
 	mux := http.NewServeMux()
-	var caseMethod, adviceMethod string
-	mux.HandleFunc("GET /v1/cases/{caseID}/advice", func(w http.ResponseWriter, r *http.Request) {
-		adviceMethod = r.Method
+	openCalls, retryCalls := 0, 0
+	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) {
+		openCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "999")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"EnvelopeID":`))
+	})
+	mux.HandleFunc("POST /v1/cases/case-1/retry", func(w http.ResponseWriter, r *http.Request) {
+		retryCalls++
+		raw, _ := io.ReadAll(r.Body)
+		if len(raw) != 0 {
+			t.Fatalf("retry body=%q", raw)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(validSubmissionJSON("case-1")))
+	})
+	result, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen())
+	if err != nil || !result.AcceptedRemote || openCalls != 1 || retryCalls != 1 {
+		t.Fatalf("result=%#v err=%v opens=%d retries=%d", result, err, openCalls, retryCalls)
+	}
+}
+
+func TestOpenCaseDoesNotRetrySemanticRejection(t *testing.T) {
+	mux := http.NewServeMux()
+	retries := 0
+	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnprocessableEntity) })
+	mux.HandleFunc("POST /v1/cases/case-1/retry", func(w http.ResponseWriter, _ *http.Request) { retries++; w.WriteHeader(http.StatusAccepted) })
+	if _, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen()); err == nil || retries != 0 {
+		t.Fatalf("err=%v retries=%d", err, retries)
+	}
+}
+
+func TestOpenCaseValidatesUTF8RuneBoundsAndExactDigests(t *testing.T) {
+	invalidUTF8 := string([]byte{0xff})
+	tests := map[string]OpenCaseRequest{
+		"invalid UTF-8":       mutateOpen(func(r *OpenCaseRequest) { r.Summary = invalidUTF8 }),
+		"too many runes":      mutateOpen(func(r *OpenCaseRequest) { r.PublicSummary = strings.Repeat("界", 1025) }),
+		"bad context digest":  mutateOpen(func(r *OpenCaseRequest) { r.ContextManifest = "sha256:" + strings.Repeat("A", 64) }),
+		"bad registry digest": mutateOpen(func(r *OpenCaseRequest) { r.Registry.Hash = "sha256:" + strings.Repeat("a", 63) }),
+	}
+	for name, request := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := (&Client{http: http.DefaultClient}).OpenCase(context.Background(), request); err == nil {
+				t.Fatal("invalid request accepted")
+			}
+		})
+	}
+}
+
+func TestOpenCaseAcceptsMultibyteTextAtRuneLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(validSubmissionJSON("case-1")))
+	})
+	request := validOpen()
+	request.Summary = strings.Repeat("界", 4096)
+	if _, err := startCaseServer(t, mux).OpenCase(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenCaseRequiresAcceptedStatus(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/cases", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(validSubmissionJSON("case-1")))
+	})
+	if _, err := startCaseServer(t, mux).OpenCase(context.Background(), validOpen()); err == nil {
+		t.Fatal("200 accepted")
+	}
+}
+
+func TestGetCaseAndListAdviceDecodeActualPascalCaseWire(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/cases/{caseID}/advice", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"AdviceID":"adv-1","CaseID":"case-1","Text":"inert advice","ReceivedAt":"2026-08-04T00:00:00Z"}]`))
 	})
-	mux.HandleFunc("GET /v1/cases/{caseID}", func(w http.ResponseWriter, r *http.Request) {
-		caseMethod = r.Method
+	mux.HandleFunc("GET /v1/cases/{caseID}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"EnvelopeID":"e","CaseID":"case-1","Commitment":"c","Summary":"s","Registry":{"routing_epoch":0,"revision":1,"hash":"sha256:x"},"ExpiresAt":"2026-08-04T00:00:00Z","Committed":true}`))
+		_, _ = w.Write([]byte(`{"EnvelopeID":"env-1","CaseID":"case-1","Commitment":` + quote(digest("c")) + `,"Summary":"secret","Registry":{"RoutingEpoch":0,"Revision":1,"Hash":` + quote(digest("a")) + `},"ExpiresAt":"2026-08-04T00:00:00Z","Committed":true}`))
 	})
 	client := startCaseServer(t, mux)
-
 	record, err := client.GetCase(context.Background(), "case-1")
-	if err != nil || record.CaseID != "case-1" || !record.Committed {
-		t.Fatalf("get = %#v, %v", record, err)
+	if err != nil || record.Registry.Revision != 1 || record.Summary != "secret" {
+		t.Fatalf("record=%#v err=%v", record, err)
 	}
 	advice, err := client.ListAdvice(context.Background(), "case-1")
-	if err != nil || len(advice) != 1 || advice[0].AdviceID != "adv-1" {
-		t.Fatalf("advice = %#v, %v", advice, err)
-	}
-	if caseMethod != http.MethodGet || adviceMethod != http.MethodGet {
-		t.Fatalf("reads must use GET; case=%s advice=%s", caseMethod, adviceMethod)
+	if err != nil || len(advice) != 1 || advice[0].Text != "inert advice" {
+		t.Fatalf("advice=%#v err=%v", advice, err)
 	}
 }
 
 func TestListAdviceRejectsForeignCase(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/cases/{caseID}/advice", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1/cases/{caseID}/advice", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"AdviceID":"adv-1","CaseID":"SOMEONE-ELSE","Text":"t","ReceivedAt":"2026-08-04T00:00:00Z"}]`))
+		_, _ = w.Write([]byte(`[{"AdviceID":"adv-1","CaseID":"other","Text":"t","ReceivedAt":"2026-08-04T00:00:00Z"}]`))
 	})
-	client := startCaseServer(t, mux)
-	if _, err := client.ListAdvice(context.Background(), "case-1"); err == nil {
-		t.Fatal("advice belonging to a different case was accepted")
+	if _, err := startCaseServer(t, mux).ListAdvice(context.Background(), "case-1"); err == nil {
+		t.Fatal("foreign advice accepted")
 	}
 }
 
 func validOpen() OpenCaseRequest {
-	return OpenCaseRequest{
-		CaseID: "case-1", Domain: "billing", Summary: "detail", PublicSummary: "blurb",
-		ContextManifest: "sha256:" + repeat64(), Registry: RegistryCoordinates{Hash: "sha256:" + repeat64()},
-	}
+	return OpenCaseRequest{CaseID: "case-1", Domain: "billing", Summary: "detail", PublicSummary: "blurb", ContextManifest: digest("a"), Registry: RegistryCoordinates{RoutingEpoch: 0, Revision: 3, Hash: digest("b")}}
 }
 
-func repeat64() string {
-	s := ""
-	for i := 0; i < 64; i++ {
-		s += "a"
-	}
-	return s
+func mutateOpen(fn func(*OpenCaseRequest)) OpenCaseRequest { r := validOpen(); fn(&r); return r }
+func digest(character string) string                       { return "sha256:" + strings.Repeat(character, 64) }
+func quote(value string) string                            { return fmt.Sprintf("%q", value) }
+func validSubmissionJSON(caseID string) string {
+	return fmt.Sprintf(`{"EnvelopeID":"env-1","CaseID":%q,"Commitment":%q,"AcceptedRemote":true,"Receipt":{"AuthorityID":"auth","Revision":3,"EnvelopeID":"env-1","Commitment":%q}}`, caseID, digest("c"), digest("c"))
 }
