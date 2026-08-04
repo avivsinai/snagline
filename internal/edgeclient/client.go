@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -134,22 +135,36 @@ func (c *Client) Ack(ctx context.Context, request AckRequest) (DeliveryOutcome, 
 	return response.Outcome, nil
 }
 
+// call issues a POST and requires HTTP 200. Claim and Ack use it.
 func (c *Client) call(ctx context.Context, path string, input, output any) error {
-	body, err := json.Marshal(input)
-	if err != nil || len(body) > maxRequestBodyBytes {
-		return errors.New("edgeclient: encode request")
+	return c.do(ctx, http.MethodPost, path, input, output, http.StatusOK)
+}
+
+// do is the shared request path. GET requests pass a nil input and send no body;
+// POST requests marshal input. The response must arrive with exactly
+// acceptedStatus, so a case open that returns 202 is not confused with a 200 read.
+func (c *Client) do(ctx context.Context, method, path string, input, output any, acceptedStatus int) error {
+	var bodyReader io.Reader
+	if input != nil {
+		body, err := json.Marshal(input)
+		if err != nil || len(body) > maxRequestBodyBytes {
+			return errors.New("edgeclient: encode request")
+		}
+		bodyReader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://edge.local"+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, "http://edge.local"+path, bodyReader)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	response, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("edgeclient: local edge unavailable: %w", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != acceptedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBodyBytes+1))
 		return fmt.Errorf("edgeclient: local edge rejected request with status %d", response.StatusCode)
 	}
@@ -170,6 +185,123 @@ func (c *Client) call(ctx context.Context, path string, input, output any) error
 		return errors.New("edgeclient: response must contain one JSON value")
 	}
 	return nil
+}
+
+// RegistryCoordinates bind a case to a specific registry generation. They are
+// deployment-owned inputs: the edge exposes no route to discover them, so a
+// caller must receive them from trusted deployment configuration.
+type RegistryCoordinates struct {
+	RoutingEpoch int64  `json:"routing_epoch"`
+	Revision     int64  `json:"revision"`
+	Hash         string `json:"hash"`
+}
+
+// OpenCaseRequest is the bounded input for opening a case. PublicSummary is the
+// only field projected to Buzz; Summary stays confidential to the fabric.
+type OpenCaseRequest struct {
+	CaseID          string
+	Domain          string
+	Summary         string
+	PublicSummary   string
+	ContextManifest string
+	Registry        RegistryCoordinates
+}
+
+// CommitReceipt and CaseSubmission mirror the edge's 202 response for an accepted
+// case. Field names match the server's default JSON marshaling.
+type CommitReceipt struct {
+	AuthorityID string
+	Revision    int64
+	EnvelopeID  string
+	Commitment  string
+}
+
+type CaseSubmission struct {
+	EnvelopeID     string
+	CaseID         string
+	Commitment     string
+	AcceptedRemote bool
+	Receipt        CommitReceipt
+}
+
+// CaseRecord mirrors GET /v1/cases/{id}. AdviceView mirrors one advice from
+// GET /v1/cases/{id}/advice. Both carry the server's default JSON field names.
+type CaseRecord struct {
+	EnvelopeID string
+	CaseID     string
+	Commitment string
+	Summary    string
+	Registry   RegistryCoordinates
+	ExpiresAt  time.Time
+	Committed  bool
+}
+
+type AdviceView struct {
+	AdviceID   string
+	CaseID     string
+	Text       string
+	ReceivedAt time.Time
+}
+
+// OpenCase submits a new case. The edge accepts it with 202; anything else is an
+// error. The caller supplies registry coordinates from deployment configuration.
+func (c *Client) OpenCase(ctx context.Context, request OpenCaseRequest) (CaseSubmission, error) {
+	if c == nil || c.http == nil ||
+		!validBounded(request.CaseID, 512) || !validBounded(request.Domain, 512) ||
+		!validBounded(request.Summary, 4096) || !validBounded(request.PublicSummary, 1024) ||
+		!validBounded(request.ContextManifest, 512) || !validBounded(request.Registry.Hash, 512) ||
+		request.Registry.RoutingEpoch < 0 || request.Registry.Revision < 0 {
+		return CaseSubmission{}, errors.New("edgeclient: invalid open-case request")
+	}
+	wire := struct {
+		CaseID          string              `json:"case_id"`
+		Domain          string              `json:"domain"`
+		Summary         string              `json:"summary"`
+		PublicSummary   string              `json:"public_summary"`
+		ContextManifest string              `json:"context_manifest"`
+		Registry        RegistryCoordinates `json:"registry"`
+	}{request.CaseID, request.Domain, request.Summary, request.PublicSummary, request.ContextManifest, request.Registry}
+	var submission CaseSubmission
+	if err := c.do(ctx, http.MethodPost, "/v1/cases", wire, &submission, http.StatusAccepted); err != nil {
+		return CaseSubmission{}, err
+	}
+	if !validBounded(submission.CaseID, 512) || submission.CaseID != request.CaseID {
+		return CaseSubmission{}, errors.New("edgeclient: open-case response did not confirm the submitted case")
+	}
+	return submission, nil
+}
+
+// GetCase reads a case record. It performs no mutation.
+func (c *Client) GetCase(ctx context.Context, caseID string) (CaseRecord, error) {
+	if c == nil || c.http == nil || !validBounded(caseID, 512) {
+		return CaseRecord{}, errors.New("edgeclient: invalid case identifier")
+	}
+	var record CaseRecord
+	if err := c.do(ctx, http.MethodGet, "/v1/cases/"+url.PathEscape(caseID), nil, &record, http.StatusOK); err != nil {
+		return CaseRecord{}, err
+	}
+	if record.CaseID != caseID {
+		return CaseRecord{}, errors.New("edgeclient: case record identifier mismatch")
+	}
+	return record, nil
+}
+
+// ListAdvice lists the advice recorded for a case. A case receives at most one
+// final advice, and may receive none, so an empty list is a valid answer.
+func (c *Client) ListAdvice(ctx context.Context, caseID string) ([]AdviceView, error) {
+	if c == nil || c.http == nil || !validBounded(caseID, 512) {
+		return nil, errors.New("edgeclient: invalid case identifier")
+	}
+	var advice []AdviceView
+	if err := c.do(ctx, http.MethodGet, "/v1/cases/"+url.PathEscape(caseID)+"/advice", nil, &advice, http.StatusOK); err != nil {
+		return nil, err
+	}
+	for _, view := range advice {
+		if view.CaseID != caseID || !validBounded(view.AdviceID, 512) {
+			return nil, errors.New("edgeclient: advice response does not belong to the requested case")
+		}
+	}
+	return advice, nil
 }
 
 func validFront(front Front) bool { return front == FrontCLI || front == FrontAMQ }

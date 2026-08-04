@@ -28,6 +28,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath \
       -ldflags "-s -w" \
       -o /out/snagline-front ./cmd/snagline-front && \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+      -ldflags "-s -w" \
+      -o /out/snagline-case ./cmd/snagline-case && \
     CGO_ENABLED=1 \
     go build -trimpath \
       -ldflags "-s -w" \
