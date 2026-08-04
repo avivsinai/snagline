@@ -146,9 +146,13 @@ produces, not holding the socket itself.
 `--lease` must be between 1s and 15m *and a whole number of seconds* — a
 fractional lease such as `90500ms` is rejected.  `--operation-timeout` must be at
 least 1s and must not exceed the lease, `--limit` is between 1 and 6, and
-`--owner` is at most 128 characters.  All of those are validated in one
-condition, so a violation reports a usage error without naming the offending
-flag; check them yourself before invoking.
+`--owner` must be non-blank and at most 128 **bytes** — the bound is
+`len(value)` on a Go string, so a multi-byte UTF-8 identity can exceed the limit with
+fewer characters than a character count suggests, and the whole invocation is
+rejected rather than truncated.  A whitespace-only owner is rejected as blank rather
+than accepted as present.  All of those are validated in one condition, so a
+violation reports a usage error without naming the offending flag; check them
+yourself before invoking.
 
 The command is one-shot: it renders what is currently claimable and exits.  Run
 it on a schedule; it is not a daemon.
