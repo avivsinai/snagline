@@ -52,7 +52,7 @@ not so you invoke it directly.
 ## What you cannot do, and must not work around
 
 **Nothing shipped opens a case on an agent's behalf.** `snagline-edge` implements
-`POST /v1/cases`, but no shipped user- or agent-facing client invokes it, and
+the case-open route, but no shipped user- or agent-facing client invokes it, and
 `snagline-front` does not open cases.
 
 Do not close that gap by pointing an agent at the edge socket. The socket's only
