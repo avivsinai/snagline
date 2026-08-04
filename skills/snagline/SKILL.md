@@ -1,10 +1,11 @@
 ---
 name: snagline
 description: >-
-  Integrate an agent with a Snagline support fabric: read a case and the advice
-  that comes back, claim deliveries with snagline-front, submit a final advice
-  with snagline-dispatcher, and verify SSP artifacts. Use when the user mentions
-  Snagline, a snag or case, Snagline advice, or the Buzz projection of either.
+  Integrate an agent with a Snagline support fabric: consume the case advice an
+  operator-run front or trusted adapter renders, understand the edge case/advice
+  API, and verify SSP artifacts, all within Snagline's trust boundary. Use only
+  for Snagline itself — a Snagline case, Snagline advice, the snagline-front or
+  snagline-dispatcher tools, or the Snagline projection into Buzz.
 ---
 
 # Snagline
@@ -13,11 +14,12 @@ Snagline is a provider-neutral support fabric for agent snags. An agent that get
 stuck opens a **case**; the fabric routes it to whoever can advise; **at most one
 final advice** comes back. Advice is inert text.
 
-The authoritative source for everything here is the repository itself, chiefly
-[`docs/agent-integration.md`](../../docs/agent-integration.md). If this skill and
-that document disagree, the repository wins — report the discrepancy rather than
-following the skill. [`references/operations.md`](references/operations.md) carries
-the operational detail; read it before doing anything that writes.
+The authoritative source for everything here is the repository's
+`docs/agent-integration.md`. If this skill and that document disagree, the
+repository wins — report the discrepancy rather than following the skill.
+[`references/operations.md`](references/operations.md) carries the operational
+detail; read it first. An agent never holds the edge socket, UID, or credentials
+— it consumes what an operator-run front or reviewed trusted adapter produces.
 
 ## Four rules that override convenience
 
@@ -34,14 +36,18 @@ the operational detail; read it before doing anything that writes.
    the authority permits at most one final advice. At-most-one is a constraint,
    not a promise — handle a case that is never answered.
 
-## What you can do with what ships
+## What ships, and who runs it
 
-| Task | How | Detail |
-| --- | --- | --- |
-| Claim and render deliveries | `snagline-front` | [operations](references/operations.md) |
-| Read a case, list advice, read one advice | edge local API `GET` routes | [operations](references/operations.md) |
-| Submit the one final advice | `snagline-dispatcher` | [operations](references/operations.md) |
-| Verify SSP fixtures or artifacts | `snagline-ssp-verify` | [operations](references/operations.md) |
+You do not run these against the edge yourself. An operator wires them to the edge
+UID; you consume what they emit. The table is here so you understand the surface,
+not so you invoke it directly.
+
+| Capability | Operator-run tool | Your part | Detail |
+| --- | --- | --- | --- |
+| Deliveries are claimed and rendered | `snagline-front` | read the rendered inert advice | [operations](references/operations.md) |
+| A case or its advice is read | edge local API `GET` routes, via a reviewed adapter | consume the returned record | [operations](references/operations.md) |
+| The one final advice is submitted | `snagline-dispatcher`, an externally constrained tool | supply advice text for it to finalize | [operations](references/operations.md) |
+| SSP fixtures or artifacts are verified | `snagline-ssp-verify` | trust its verdict, not your own parse | [operations](references/operations.md) |
 
 ## What you cannot do, and must not work around
 

@@ -1,25 +1,34 @@
 {
   "name": "snagline",
   "version": "0.1.0",
-  "description": "Integrate an agent with a Snagline support fabric within its trust boundaries: read cases and advice, claim deliveries with snagline-front, submit one final advice with snagline-dispatcher, and verify SSP artifacts.",
+  "description": "Understand and operate within a Snagline support fabric's trust boundary: consume the inert case advice an operator-run front or reviewed trusted adapter renders, learn the edge case/advice API, and verify SSP artifacts. An agent never holds the edge socket, UID, or credentials, and no shipped client opens a case.",
   "author": {
     "name": "Aviv Sinai",
     "email": "aviv.s@taboola.com"
   },
   "license": "Apache-2.0",
   "repository": "https://github.com/avivsinai/snagline",
-  "keywords": ["snagline", "support", "advice", "case", "ssp", "buzz"],
+  "keywords": [
+    "snagline",
+    "support",
+    "advice",
+    "case",
+    "ssp",
+    "buzz"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Snagline",
     "shortDescription": "Operate a Snagline support fabric within its trust boundaries",
-    "longDescription": "Read Snagline cases and the advice that comes back, claim deliveries with snagline-front, submit the single final advice with snagline-dispatcher, and verify SSP artifacts. Explains why no shipped client opens a case and why an agent must never hold the edge UID.",
+    "longDescription": "Consume the inert case advice an operator-run front or reviewed trusted adapter renders, understand the edge case and advice API, and verify SSP artifacts. An agent never holds the edge socket, UID, or credentials; case opening and advice finalization happen only through explicitly deployed, externally constrained operator tools.",
     "developerName": "Aviv Sinai",
     "category": "Developer Tools",
-    "capabilities": ["Read"],
+    "capabilities": [
+      "Read"
+    ],
     "defaultPrompt": [
-      "Use Snagline to show me the advice on this case.",
-      "Use Snagline to claim pending deliveries for this owner."
+      "Explain the Snagline trust boundary for an integrating agent.",
+      "Show me the advice that came back on this Snagline case."
     ]
   }
 }
