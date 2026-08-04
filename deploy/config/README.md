@@ -18,6 +18,7 @@ of these accounts.
 | delivery | `snagline-delivery` | none (stateless) | `delivery.env.example` |
 | edge | `snagline-edge-EDGE_ID` | `/var/lib/snagline-edge-EDGE_ID` | `edge.env.example` |
 | front (one-shot trusted edge helper) | `snagline-edge-EDGE_ID` | none | `front-cli.args.example` or `front-amq.args.example` |
+| case (one-shot session-bound edge helper) | `snagline-edge-EDGE_ID` | none | `case-session-binding.example.json` at the fixed runtime path |
 | dispatcher | `snagline-dispatcher` | `/var/lib/snagline-dispatcher` | `dispatcher.env.example` |
 | Buzz projector | `snagline-buzz-projector` | `/var/lib/snagline-buzz-projector` | `buzz-projector.config.example.json` |
 
@@ -97,11 +98,12 @@ must be distinct from every runtime account and not available to any agent
 runtime.
 
 `snagline-delivery`, `snagline-edge`, `snagline-dispatcher`,
-`snagline-buzz-projector`, and `snagline-front` are runtime roles. The front
-runs as the matching edge service UID because the edge deliberately exposes a
+`snagline-buzz-projector`, `snagline-front`, and `snagline-case` are runtime
+roles. The front and case adapter run as the matching edge service UID because
+the edge deliberately exposes a
 `0600` socket inside its `0700` directory; it is trusted edge code, not an
 agent/model process. These roles do not provision identities or schema. The
-dispatcher and front are one-shot commands.
+dispatcher, front, and case adapter are one-shot commands.
 `snagline-front` is distributed as a release binary, not as a container target:
 AMQ mode must execute the operator-pinned host AMQ binary and share the edge
 host UID. Do not inject an AMQ executable into a generic front container.
@@ -109,6 +111,12 @@ The front has no environment-variable interface: its exact flags live in the
 two `.args.example` files. In AMQ mode, its private JSON binding pins the
 executable and lane; it only displays passive inert advice and does not receive
 an edge signing key, SQLite key, PostgreSQL role, NATS credential, or Buzz key.
+The case adapter has no authority-selecting flags or environment variables. Its
+current-UID-owned `0600` binding is mounted at the fixed path
+`/run/snagline-case/session.json` and pins the socket, case ID, domain, context
+commitment, and registry coordinates. The confidential summary arrives only as
+bounded stdin JSON. The adapter never prints stored case summaries or advice
+text; use `snagline-front` for inert advice delivery.
 `snagline-ssp-verify` is an offline verifier utility, not a deployed runtime
 role, so it has no service template.
 

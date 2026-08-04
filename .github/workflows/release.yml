@@ -75,6 +75,7 @@ jobs:
           tar -tzf "$portable_archive" | grep -qx 'snagline-control'
           tar -tzf "$portable_archive" | grep -qx 'snagline-delivery'
           tar -tzf "$portable_archive" | grep -qx 'snagline-front'
+          tar -tzf "$portable_archive" | grep -qx 'snagline-case'
           tar -tzf "$portable_archive" | grep -qx 'snagline-buzz-projector'
           tar -tzf "$portable_archive" | grep -qx 'snagline-ssp-verify'
           for archive in "$edge_archive" "$portable_archive"; do
@@ -94,6 +95,7 @@ jobs:
             "$scratch/portable/snagline-control" \
             "$scratch/portable/snagline-delivery" \
             "$scratch/portable/snagline-front" \
+            "$scratch/portable/snagline-case" \
             "$scratch/portable/snagline-buzz-projector" \
             "$scratch/portable/snagline-ssp-verify"; do
             set +e
@@ -111,7 +113,7 @@ jobs:
           set -eu
           created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           mkdir release-images
-          for target in control delivery edge dispatcher buzz-projector ssp-verify; do
+          for target in control delivery edge case dispatcher buzz-projector ssp-verify; do
             image="snagline-${target}:${{ github.ref_name }}"
             docker build \
               --target "$target" \

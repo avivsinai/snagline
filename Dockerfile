@@ -28,6 +28,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath \
       -ldflags "-s -w" \
       -o /out/snagline-front ./cmd/snagline-front && \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+      -ldflags "-s -w" \
+      -o /out/snagline-case ./cmd/snagline-case && \
     CGO_ENABLED=1 \
     go build -trimpath \
       -ldflags "-s -w" \
@@ -78,6 +82,10 @@ ENTRYPOINT ["/usr/local/bin/snagline-edge"]
 # snagline-front is intentionally not a container target. It must run beside
 # the edge as the matching host service UID and, in AMQ mode, execute the
 # operator-pinned host AMQ binary. It remains available in release archives.
+
+FROM runtime-static AS case
+COPY --from=build /out/snagline-case /usr/local/bin/snagline-case
+ENTRYPOINT ["/usr/local/bin/snagline-case"]
 
 FROM runtime-sqlcipher AS dispatcher
 COPY --from=build /out/snagline-dispatcher /usr/local/bin/snagline-dispatcher

@@ -37,8 +37,8 @@ domains that never share authority:
 See [`docs/buzz-snagline-pristine-design.md`](docs/buzz-snagline-pristine-design.md)
 for the full design, and
 [`docs/agent-integration.md`](docs/agent-integration.md) for the safe
-agent-integration boundary around the edge local API — including why no shipped
-client opens a case and why an agent must not be given the edge UID.
+agent-integration boundary around the session-bound case adapter and why an
+agent must never receive the edge socket or UID.
 
 ## Commands
 
@@ -46,6 +46,7 @@ client opens a case and why an agent must not be given the edge UID.
 - `snagline-delivery`
 - `snagline-edge`
 - `snagline-front`
+- `snagline-case`
 - `snagline-dispatcher`
 - `snagline-buzz-projector`
 - `snagline-ssp-verify`
@@ -58,7 +59,9 @@ is an offline fixture/artifact verifier with no service template and no
 `deploy/config/` entry. `snagline-front` is a one-shot CLI or AMQ (Agent
 Message Queue, an external operator-pinned agent-messaging CLI it invokes;
 not a message broker) deliverer that runs through the edge's private
-Unix-socket API under the matching edge UID. None of the seven is a
+Unix-socket API under the matching edge UID. `snagline-case` is a one-shot,
+deployment-bound case adapter whose confidential open input arrives on stdin.
+None of the eight is a
 `--help`-oriented interactive CLI.
 
 There is no compatibility layer for the removed concierge, control-plane, or

@@ -15,9 +15,9 @@ Start from [the secret-free templates](../../deploy/config/README.md). Create
 one dedicated Unix UID for every role and a distinct `0700` state directory for
 every edge and for the projector. Mount private key, SQLite-key, NATS credential,
 and descriptor files to the owning UID only. Do not share an edge UID with an
-agent runtime; the only same-UID helper is the shipped, bounded
-`snagline-front` process that must traverse the edge's private socket
-directory. Do not share a dispatcher UID with a Buzz specialist.
+agent runtime; the only same-UID helpers are the shipped, bounded
+`snagline-front` and `snagline-case` processes that must traverse the edge's
+private socket directory. Do not share a dispatcher UID with a Buzz specialist.
 
 Container targets are packaging artifacts, not production identity
 definitions. The image-default `nonroot` user prevents root execution but does
@@ -115,9 +115,14 @@ Order dependencies from authority outward:
    in `amq` mode it sends an inert passive display to the one protected
    configured lane. It does not read edge SQLite or carry an SSP, PostgreSQL,
    NATS, or Buzz credential and is never an agent/model process.
-6. Start `snagline-buzz-projector` last. Its work is optional for semantic
+6. Mount one current-UID-owned `0600` session binding at
+   `/run/snagline-case/session.json` and expose only the fixed `open`, `retry`,
+   `get`, and `advice` tool operations. Run `snagline-case` under the matching
+   edge UID; never let an agent choose its socket, case ID, binding path, or
+   registry coordinates. Pass confidential open detail through stdin, not argv.
+7. Start `snagline-buzz-projector` last. Its work is optional for semantic
    acceptance and edge delivery.
-7. Invoke `snagline-dispatcher` only through the externally constrained
+8. Invoke `snagline-dispatcher` only through the externally constrained
    dispatcher tool policy, with one case ID, exact commitment, and inert text.
 
 Control, delivery, edge, and Buzz projector expose exactly `GET /livez`,

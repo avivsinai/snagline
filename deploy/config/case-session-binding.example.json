@@ -1,0 +1,11 @@
+{
+  "socket": "/run/snagline-edge-EDGE_ID/edge.sock",
+  "case_id": "OPAQUE_SESSION_BOUND_CASE_ID",
+  "domain": "runtime",
+  "context_manifest": "sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGITS",
+  "registry": {
+    "routing_epoch": 0,
+    "revision": 0,
+    "hash": "sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGITS"
+  }
+}

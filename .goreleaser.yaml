@@ -37,6 +37,13 @@ builds:
       - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64]
+  - id: snagline-case
+    main: ./cmd/snagline-case
+    binary: snagline-case
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
   - id: snagline-dispatcher
     main: ./cmd/snagline-dispatcher
     binary: snagline-dispatcher
@@ -65,6 +72,7 @@ archives:
       - snagline-control
       - snagline-delivery
       - snagline-front
+      - snagline-case
       - snagline-buzz-projector
       - snagline-ssp-verify
     name_template: "snagline_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
