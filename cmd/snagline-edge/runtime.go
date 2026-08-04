@@ -352,10 +352,15 @@ func waitEdgeRetry(ctx context.Context) bool {
 	}
 }
 
+// Errors leaving this function reach an operator log, so all three exits are
+// curated strings like every other runEdge branch. net.Listen bind errors,
+// http.Server accept errors, and Shutdown listener-close errors all carry a
+// net.OpError whose Addr is the configured socket pathname, so none of them are
+// returned verbatim.
 func serveEdgeSocket(ctx context.Context, socket string, service edgeAPI) error {
 	listener, err := runtimeops.ListenUnix(socket)
 	if err != nil {
-		return err
+		return errors.New("edge local API socket unavailable")
 	}
 	server := &http.Server{Handler: newHandler(service), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	errCh := make(chan error, 1)
@@ -365,11 +370,14 @@ func serveEdgeSocket(ctx context.Context, socket string, service edgeAPI) error 
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return err
+		return errors.New("edge local API stopped serving")
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		return server.Shutdown(shutdown)
+		if err := server.Shutdown(shutdown); err != nil {
+			return errors.New("edge local API shutdown incomplete")
+		}
+		return nil
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -59,6 +60,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runEdge(ctx, config); err != nil {
+		// Every startup failure inside runEdge reports the same stdout code, so
+		// without this the cause is unrecoverable from a container log. Errors
+		// leaving runEdge are curated strings, never wrapped OS errors, so this
+		// cannot publish a socket path. The stdout contract is unchanged.
+		log.Printf("snagline-edge: runtime unavailable: %v", err)
 		os.Exit(writeJSON(os.Stdout, apiError{OK: false, Code: "runtime_unavailable"}))
 	}
 }
