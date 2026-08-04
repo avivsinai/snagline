@@ -35,7 +35,10 @@ domains that never share authority:
   pending exact signed SSP bytes, and per-generation delivery evidence.
 
 See [`docs/buzz-snagline-pristine-design.md`](docs/buzz-snagline-pristine-design.md)
-for the full design.
+for the full design, and
+[`docs/agent-integration.md`](docs/agent-integration.md) for the safe
+agent-integration boundary around the edge local API — including why no shipped
+client opens a case and why an agent must not be given the edge UID.
 
 ## Commands
 
