@@ -1,0 +1,25 @@
+{
+  "name": "snagline",
+  "version": "0.1.0",
+  "description": "Integrate an agent with a Snagline support fabric within its trust boundaries: read cases and advice, claim deliveries with snagline-front, submit one final advice with snagline-dispatcher, and verify SSP artifacts.",
+  "author": {
+    "name": "Aviv Sinai",
+    "email": "aviv.s@taboola.com"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/avivsinai/snagline",
+  "keywords": ["snagline", "support", "advice", "case", "ssp", "buzz"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Snagline",
+    "shortDescription": "Operate a Snagline support fabric within its trust boundaries",
+    "longDescription": "Read Snagline cases and the advice that comes back, claim deliveries with snagline-front, submit the single final advice with snagline-dispatcher, and verify SSP artifacts. Explains why no shipped client opens a case and why an agent must never hold the edge UID.",
+    "developerName": "Aviv Sinai",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "Use Snagline to show me the advice on this case.",
+      "Use Snagline to claim pending deliveries for this owner."
+    ]
+  }
+}
