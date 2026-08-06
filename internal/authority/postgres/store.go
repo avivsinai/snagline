@@ -664,7 +664,7 @@ func deterministicOutboxID(parts ...any) string {
 	h := sha256.New()
 	for _, part := range parts {
 		value := fmt.Sprint(part)
-		_, _ = h.Write([]byte(fmt.Sprintf("%d:", len(value))))
+		_, _ = fmt.Fprintf(h, "%d:", len(value))
 		_, _ = h.Write([]byte(value))
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))

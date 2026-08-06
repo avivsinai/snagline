@@ -6,19 +6,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/avivsinai/snagline/internal/edge"
-	"github.com/avivsinai/snagline/internal/runtimeops"
 	"github.com/avivsinai/snagline/internal/sspedge"
 )
 
@@ -118,30 +115,6 @@ func main() {
 		log.Printf("snagline-edge: runtime unavailable: %v", err)
 		os.Exit(writeJSON(os.Stdout, apiError{OK: false, Code: "runtime_unavailable"}))
 	}
-}
-
-// run is the narrow injected local-API harness used by focused tests. The
-// production composition is runEdge in runtime.go.
-func run(args []string, factory func() (edgeAPI, error), stdout io.Writer) int {
-	flags := flag.NewFlagSet("snagline-edge", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	socket := flags.String("socket", "", "absolute Unix socket path")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || !filepath.IsAbs(*socket) {
-		return writeJSON(stdout, apiError{OK: false, Code: "invalid_arguments"})
-	}
-	service, err := factory()
-	if err != nil || service == nil {
-		return writeJSON(stdout, apiError{OK: false, Code: "runtime_unavailable"})
-	}
-	listener, err := runtimeops.ListenUnix(*socket)
-	if err != nil {
-		return writeJSON(stdout, apiError{OK: false, Code: "listen_failed"})
-	}
-	defer listener.Close()
-	if err := http.Serve(listener, newHandler(service)); err != nil {
-		return 1
-	}
-	return 0
 }
 
 func newHandler(service edgeAPI) http.Handler {

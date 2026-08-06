@@ -3,9 +3,12 @@ SHELL := /bin/sh
 GO ?= go
 DOCKER ?= docker
 GITLEAKS ?= gitleaks
+SHELLCHECK ?= shellcheck
 PKG_CONFIG ?= pkg-config
 BINDIR ?= bin
 IMAGE_TARGET ?= control
+GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 CGO_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags openssl 2>/dev/null)
 CGO_LDFLAGS ?= $(shell $(PKG_CONFIG) --libs-only-L openssl 2>/dev/null)
@@ -18,11 +21,19 @@ LDFLAGS := -s -w
 
 COMMANDS := snagline-control snagline-delivery snagline-edge snagline-front snagline-case snagline-dispatcher snagline-buzz-projector snagline-ssp-verify
 
-.PHONY: fmt-check sqlcipher-toolchain verify-sqlcipher-build vet test verify-ssp verify-buzz-contract build docker-build secrets-scan clean verify
+.PHONY: fmt-check lint mod-check sqlcipher-toolchain verify-sqlcipher-build vet test verify-ssp verify-buzz-contract build docker-build secrets-scan clean verify
 
 fmt-check:
-	@unformatted="$$(find . -type f -name '*.go' -not -path './.git/*' -print0 | xargs -0 $(GO)fmt -l)"; \
+	@unformatted="$$(git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 $(GO)fmt -l)"; \
 	if [ -n "$$unformatted" ]; then printf '%s\n' "$$unformatted"; exit 1; fi
+
+lint:
+	$(GOLANGCI_LINT) run ./...
+	git ls-files --cached --others --exclude-standard -z -- '*.sh' | xargs -0 $(SHELLCHECK) -x
+	$(ACTIONLINT) -shellcheck "$(SHELLCHECK)"
+
+mod-check:
+	$(GO) mod tidy -diff
 
 sqlcipher-toolchain:
 	@command -v "$(PKG_CONFIG)" >/dev/null
@@ -64,7 +75,7 @@ docker-build:
 secrets-scan:
 	GITLEAKS=$(GITLEAKS) ./scripts/secrets-scan.sh tree
 
-verify: fmt-check verify-sqlcipher-build vet test build verify-ssp verify-buzz-contract secrets-scan
+verify: fmt-check lint mod-check verify-sqlcipher-build vet test build verify-ssp verify-buzz-contract secrets-scan
 
 clean:
 	rm -rf $(BINDIR)

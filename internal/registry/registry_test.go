@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -142,41 +141,6 @@ func vectorPrivateKey(label string) ed25519.PrivateKey {
 func pinnedKey(t *testing.T) ed25519.PublicKey {
 	t.Helper()
 	return vectorPrivateKey(pinnedKeyID).Public().(ed25519.PublicKey)
-}
-
-func signingKey(t *testing.T, label string) identity.Ed25519SigningKey {
-	t.Helper()
-	key, err := identity.NewEd25519SigningKey(vectorPrivateKey(label))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key
-}
-
-func signedRegistryRevision(t *testing.T, revision int64, id string) []byte {
-	t.Helper()
-	var envelope ssp.Envelope
-	if err := json.Unmarshal(readVector(t, "registry-v1.signed.json"), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(envelope.Body, &body); err != nil {
-		t.Fatal(err)
-	}
-	body["revision"] = float64(revision)
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope.Body = encoded
-	envelope.ID = id
-	envelope.RegistryRevision = revision
-	envelope.Signature = ""
-	raw, err := ssp.Sign(envelope, signingKey(t, pinnedKeyID), vectorNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
 }
 
 func newVerifier(t *testing.T) *Verifier {

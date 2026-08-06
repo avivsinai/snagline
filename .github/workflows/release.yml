@@ -48,6 +48,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Install pinned ShellCheck
+        run: |
+          ./scripts/install-shellcheck.sh "$RUNNER_TEMP/bin/shellcheck"
+          echo "SHELLCHECK=$RUNNER_TEMP/bin/shellcheck" >> "$GITHUB_ENV"
       - name: Verify exact release source
         run: make verify
       - name: Verify exact release source with PostgreSQL and race detector

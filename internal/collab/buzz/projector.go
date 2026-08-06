@@ -450,11 +450,12 @@ type collaborationCard struct {
 
 func renderCard(envelope ssp.Envelope, commitment, summary, advice string) (string, error) {
 	card := collaborationCard{Family: envelope.Schema, CaseID: envelope.CaseID, EnvelopeID: envelope.ID, Commitment: commitment}
-	if envelope.Schema == ssp.FamilyCase {
+	switch envelope.Schema {
+	case ssp.FamilyCase:
 		card.Summary = boundedCardText(summary, 1024)
-	} else if envelope.Schema == ssp.FamilyAdvice {
+	case ssp.FamilyAdvice:
 		card.Advice = boundedCardText(advice, 1024)
-	} else {
+	default:
 		return "", fmt.Errorf("collab buzz: no collaboration card for %q", envelope.Schema)
 	}
 	encoded, err := json.Marshal(card)
