@@ -39,6 +39,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 \
     go build -trimpath \
       -ldflags "-s -w" \
+      -o /out/snagline-dispatcher-runtime ./cmd/snagline-dispatcher-runtime && \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+      -ldflags "-s -w" \
+      -o /out/snagline-dispatcher-proxy ./cmd/snagline-dispatcher-proxy && \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+      -ldflags "-s -w" \
       -o /out/snagline-buzz-projector ./cmd/snagline-buzz-projector && \
     CGO_ENABLED=0 \
     go build -trimpath \
@@ -90,6 +98,12 @@ ENTRYPOINT ["/usr/local/bin/snagline-case"]
 FROM runtime-sqlcipher AS dispatcher
 COPY --from=build /out/snagline-dispatcher /usr/local/bin/snagline-dispatcher
 ENTRYPOINT ["/usr/local/bin/snagline-dispatcher"]
+
+FROM runtime-sqlcipher AS dispatcher-runtime
+COPY --from=build /out/snagline-dispatcher /usr/local/bin/snagline-dispatcher
+COPY --from=build /out/snagline-dispatcher-runtime /usr/local/bin/snagline-dispatcher-runtime
+COPY --from=build /out/snagline-dispatcher-proxy /usr/local/bin/snagline-dispatcher-proxy
+ENTRYPOINT ["/usr/local/bin/snagline-dispatcher-runtime"]
 
 FROM runtime-static AS buzz-projector
 COPY --from=build /out/snagline-buzz-projector /usr/local/bin/snagline-buzz-projector

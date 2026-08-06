@@ -46,7 +46,7 @@ var _ edge.GatewayClient = (*Client)(nil)
 
 func New(config Config) (*Client, error) {
 	endpoint, err := url.Parse(config.Endpoint)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || (endpoint.Path != "" && endpoint.Path != "/") || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	if err != nil || endpoint.Scheme != "https" || endpoint.Opaque != "" || endpoint.Host == "" || endpoint.User != nil || (endpoint.Path != "" && endpoint.Path != "/") || endpoint.RawPath != "" || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" {
 		return nil, errors.New("controlclient: root HTTPS endpoint without credentials, query, or fragment is required")
 	}
 	if config.Workload.PrincipalID == "" || (config.Workload.EdgeID == "") != (config.Workload.EdgeGeneration == 0) || config.Workload.EdgeGeneration < 0 {
@@ -68,7 +68,11 @@ func New(config Config) (*Client, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsConfig
-	return &Client{endpoint: endpoint, workload: config.Workload, http: &http.Client{Transport: transport, Timeout: timeout}}, nil
+	return &Client{endpoint: endpoint, workload: config.Workload, http: &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: rejectRedirect}}, nil
+}
+
+func rejectRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // Submit implements edge.GatewayClient. It routes only SSP cases and advice

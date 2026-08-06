@@ -8,16 +8,24 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/avivsinai/snagline/internal/authority"
 	"github.com/avivsinai/snagline/internal/edge"
 )
+
+type controlRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function controlRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
 
 func TestSubmitUsesMTLSAndForwardsExactBytesWithoutIdentityHeaders(t *testing.T) {
 	serverCert, clientCert, roots := testTLS(t)
@@ -74,6 +82,53 @@ func TestClientRejectsWeakenedTLSOrWorkloadMismatchBeforeRequest(t *testing.T) {
 	}
 	if _, err := client.Submit(context.Background(), edge.WorkloadIdentity{PrincipalID: "other", EdgeID: "edge-1", EdgeGeneration: 1}, testCaseRaw()); err == nil {
 		t.Fatal("mismatched workload reached transport")
+	}
+}
+
+func TestClientRejectsEndpointComponentWidening(t *testing.T) {
+	_, clientCert, roots := testTLS(t)
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{clientCert}}
+	for name, endpoint := range map[string]string{
+		"scheme":       "http://control.invalid",
+		"path":         "https://control.invalid/v1",
+		"escaped path": "https://control.invalid/%2f",
+		"query":        "https://control.invalid?next=elsewhere",
+		"empty query":  "https://control.invalid?",
+		"fragment":     "https://control.invalid#fragment",
+		"userinfo":     "https://user@control.invalid",
+		"opaque":       "https:control.invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, err := New(Config{Endpoint: endpoint, TLS: tlsConfig, Workload: edge.WorkloadIdentity{PrincipalID: "edge"}})
+			if err == nil || client != nil {
+				t.Fatalf("New accepted widened endpoint %q", endpoint)
+			}
+		})
+	}
+}
+
+func TestClientNeverResendsPostAcross307Or308(t *testing.T) {
+	_, clientCert, roots := testTLS(t)
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			client, err := New(Config{Endpoint: "https://control.invalid", TLS: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{clientCert}}, Workload: edge.WorkloadIdentity{PrincipalID: "edge", EdgeID: "edge-1", EdgeGeneration: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			client.http.Transport = controlRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{
+					StatusCode: status,
+					Header:     http.Header{"Location": []string{"https://control.invalid/redirected"}},
+					Body:       io.NopCloser(strings.NewReader(`{"code":"redirect_rejected"}`)),
+				}, nil
+			})
+			_, err = client.Submit(context.Background(), edge.WorkloadIdentity{PrincipalID: "edge", EdgeID: "edge-1", EdgeGeneration: 1}, testCaseRaw())
+			if !errors.Is(err, ErrRejected) || calls != 1 {
+				t.Fatalf("submit error=%v calls=%d", err, calls)
+			}
+		})
 	}
 }
 
