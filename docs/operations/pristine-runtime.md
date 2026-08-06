@@ -80,8 +80,12 @@ Source builds require Go 1.26, CGO, `pkg-config`, OpenSSL headers, and
 `libcrypto` for `snagline-edge` and `snagline-dispatcher`. The pristine release
 matrix deliberately supports one exact target, Linux amd64. Its separate edge
 archive dynamically requires the platform's OpenSSL 3 `libcrypto`; the other
-commands remain CGO-free and are packaged separately. Only the edge and
-dispatcher container targets use the SSL-bearing distroless Debian base.
+commands remain CGO-free and are packaged separately. The edge archive carries
+the dispatcher runtime and proxy with their CGO dispatcher dependency. The
+single `dispatcher-runtime` container image likewise contains the dispatcher,
+runtime, and proxy; it uses the SSL-bearing distroless Debian base rather than
+introducing separate runtime images. Only the edge, dispatcher, and
+dispatcher-runtime container targets use that base.
 Expanding the release matrix requires a native runner and the same archive and
 loader gates for every new target; do not redistribute an ad hoc binary.
 

@@ -51,6 +51,20 @@ builds:
       - CGO_ENABLED=1
     goos: [linux]
     goarch: [amd64]
+  - id: snagline-dispatcher-runtime
+    main: ./cmd/snagline-dispatcher-runtime
+    binary: snagline-dispatcher-runtime
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+  - id: snagline-dispatcher-proxy
+    main: ./cmd/snagline-dispatcher-proxy
+    binary: snagline-dispatcher-proxy
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
   - id: snagline-buzz-projector
     main: ./cmd/snagline-buzz-projector
     binary: snagline-buzz-projector
@@ -87,6 +101,8 @@ archives:
     ids:
       - snagline-edge
       - snagline-dispatcher
+      - snagline-dispatcher-runtime
+      - snagline-dispatcher-proxy
     name_template: "snagline_edge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz

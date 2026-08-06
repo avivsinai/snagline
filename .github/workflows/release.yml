@@ -76,6 +76,8 @@ jobs:
           (cd dist && sha256sum -c checksums.txt)
           tar -tzf "$edge_archive" | grep -qx 'snagline-edge'
           tar -tzf "$edge_archive" | grep -qx 'snagline-dispatcher'
+          tar -tzf "$edge_archive" | grep -qx 'snagline-dispatcher-runtime'
+          tar -tzf "$edge_archive" | grep -qx 'snagline-dispatcher-proxy'
           tar -tzf "$portable_archive" | grep -qx 'snagline-control'
           tar -tzf "$portable_archive" | grep -qx 'snagline-delivery'
           tar -tzf "$portable_archive" | grep -qx 'snagline-front'
@@ -96,6 +98,8 @@ jobs:
           for binary in \
             "$scratch/edge/snagline-edge" \
             "$scratch/edge/snagline-dispatcher" \
+            "$scratch/edge/snagline-dispatcher-runtime" \
+            "$scratch/edge/snagline-dispatcher-proxy" \
             "$scratch/portable/snagline-control" \
             "$scratch/portable/snagline-delivery" \
             "$scratch/portable/snagline-front" \
@@ -117,7 +121,7 @@ jobs:
           set -eu
           created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           mkdir release-images
-          for target in control delivery edge case dispatcher buzz-projector ssp-verify; do
+          for target in control delivery edge case dispatcher dispatcher-runtime buzz-projector ssp-verify; do
             image="snagline-${target}:${{ github.ref_name }}"
             docker build \
               --target "$target" \
