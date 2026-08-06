@@ -848,9 +848,10 @@ func valueEnd(raw []byte, start int) (int, error) {
 				inString = true
 				continue
 			}
-			if c == '{' || c == '[' {
+			switch c {
+			case '{', '[':
 				stack = append(stack, c)
-			} else if c == '}' || c == ']' {
+			case '}', ']':
 				stack = stack[:len(stack)-1]
 				if len(stack) == 0 {
 					return i + 1, nil

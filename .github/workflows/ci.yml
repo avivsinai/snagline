@@ -44,8 +44,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+      - name: Install pinned ShellCheck
+        run: |
+          ./scripts/install-shellcheck.sh "$RUNNER_TEMP/bin/shellcheck"
+          echo "SHELLCHECK=$RUNNER_TEMP/bin/shellcheck" >> "$GITHUB_ENV"
       - name: Check formatting
         run: make fmt-check
+      - name: Lint tracked sources and workflows
+        run: make lint mod-check
       - name: Verify CGO-disabled edge fails before filesystem access
         run: make verify-sqlcipher-build
       - name: Test

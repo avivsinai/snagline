@@ -388,7 +388,7 @@ func (c *Client) ListAdvice(ctx context.Context, caseID string) ([]AdviceView, e
 		if view.CaseID != caseID || !validCaseText(view.AdviceID, 512) || !validCaseText(view.Text, 8192) {
 			return nil, errors.New("edgeclient: advice response does not belong to the requested case")
 		}
-		advice = append(advice, AdviceView{AdviceID: view.AdviceID, CaseID: view.CaseID, Text: view.Text, ReceivedAt: view.ReceivedAt})
+		advice = append(advice, AdviceView(view))
 	}
 	return advice, nil
 }

@@ -184,8 +184,7 @@ func TestStockRelayClientPublishesExactPreparedBytesWithNIP98(t *testing.T) {
 	signer := newStockTestSigner(t)
 	wire := stockTestWire(t, signer.privateKey, now)
 	var requests atomic.Int32
-	var relay *httptest.Server
-	relay = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.URL.Path != "/events" || r.Method != http.MethodPost {
 			t.Errorf("request=%s %s", r.Method, r.URL.Path)
@@ -240,8 +239,7 @@ func TestStockRelayClientReconcilesAmbiguousWriteByExactIDOnly(t *testing.T) {
 	wire := stockTestWire(t, signer.privateKey, now)
 	event := decodeStockTestEvent(t, wire)
 	var events, queries atomic.Int32
-	var relay *httptest.Server
-	relay = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		assertStockNIP98(t, r, signer.publicKey, body, now)
 		assertStockNIPOAHeader(t, r, signer.publicKey)

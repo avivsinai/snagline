@@ -5,8 +5,8 @@ set -eu
 # test must not leave interpreter cache artifacts in the source tree.
 export PYTHONDONTWRITEBYTECODE=1
 
-script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
-repo_root=$(CDPATH= cd "$script_dir/.." && pwd)
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH='' cd "$script_dir/.." && pwd)
 vector_dir="$repo_root/docs/ssp/vectors"
 requirements_source="$vector_dir/generator/requirements.txt"
 requirements_lock="$vector_dir/generator/requirements.lock"
