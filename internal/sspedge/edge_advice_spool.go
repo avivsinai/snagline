@@ -158,14 +158,14 @@ func (d *DB) MarkAdviceAcceptedRemote(ctx context.Context, accepted edge.Accepte
 	}
 	defer tx.Rollback()
 
-	var adviceID, commitment, state, authorityID, acceptedAtRaw string
+	var adviceID, commitment, state, authorityID string
 	var authorityRevision int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT advice_id,commitment,state,COALESCE(authority_id,''),
-		       COALESCE(authority_revision,0),COALESCE(accepted_at,'')
+		       COALESCE(authority_revision,0)
 		FROM ssp_edge_pending_advice
 		WHERE case_id=?`, accepted.CaseID).
-		Scan(&adviceID, &commitment, &state, &authorityID, &authorityRevision, &acceptedAtRaw)
+		Scan(&adviceID, &commitment, &state, &authorityID, &authorityRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("sspedge: pending advice not found")
 	}
@@ -177,8 +177,7 @@ func (d *DB) MarkAdviceAcceptedRemote(ctx context.Context, accepted edge.Accepte
 	}
 	if state == "accepted_remote" {
 		if authorityID == accepted.Receipt.AuthorityID &&
-			authorityRevision == accepted.Receipt.Revision &&
-			acceptedAtRaw == sqlTime(accepted.AcceptedAt) {
+			authorityRevision == accepted.Receipt.Revision {
 			return tx.Commit()
 		}
 		return errors.New("sspedge: accepted_remote advice receipt conflicts with stored evidence")

@@ -49,6 +49,35 @@ func LoadClientTLS(certificatePath, privateKeyPath, rootCAPath string) (*tls.Con
 	}, nil
 }
 
+func LoadServerTLS(certificatePath, privateKeyPath, clientCAPath string) (*tls.Config, error) {
+	certificatePEM, err := securefile.ReadRegularBounded(certificatePath, maxPEMBytes)
+	if err != nil {
+		return nil, err
+	}
+	privateKeyPEM, err := securefile.ReadPrivateBounded(privateKeyPath, maxPEMBytes)
+	if err != nil {
+		return nil, err
+	}
+	certificate, err := tls.X509KeyPair(certificatePEM, privateKeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	clientCAPEM, err := securefile.ReadRegularBounded(clientCAPath, maxPEMBytes)
+	if err != nil {
+		return nil, err
+	}
+	clients := x509.NewCertPool()
+	if !clients.AppendCertsFromPEM(clientCAPEM) {
+		return nil, errors.New("securetransport: invalid client CA")
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{certificate},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clients,
+	}, nil
+}
+
 type NATSConfig struct {
 	URL             string
 	CredentialsFile string

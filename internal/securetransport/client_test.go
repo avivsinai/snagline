@@ -3,6 +3,7 @@ package securetransport
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -27,6 +28,17 @@ func TestLoadClientTLSSeparatesPublicAndPrivateDeploymentFiles(t *testing.T) {
 	}
 	if _, err := LoadClientTLS(certificatePath, privateKeyPath, rootPath); err == nil {
 		t.Fatal("accepted group/world-readable TLS private key")
+	}
+}
+
+func TestLoadServerTLSRequiresVerifiedClientCertificates(t *testing.T) {
+	certificatePath, privateKeyPath, clientCAPath := writeTestTLSFiles(t)
+	config, err := LoadServerTLS(certificatePath, privateKeyPath, clientCAPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MinVersion != tls.VersionTLS13 || config.ClientAuth != tls.RequireAndVerifyClientCert || config.ClientCAs == nil {
+		t.Fatalf("TLS config = %#v", config)
 	}
 }
 

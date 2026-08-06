@@ -32,7 +32,7 @@ type commandResult struct {
 }
 
 func main() {
-	config, err := parseDispatcherRuntimeConfig(os.Args[1:])
+	config, err := parseDispatcherRuntimeConfig(os.Args[1:], os.Stdin)
 	if err != nil {
 		os.Exit(writeResult(os.Stdout, commandResult{OK: false, Code: "invalid_arguments"}))
 	}

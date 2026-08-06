@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -10,8 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/avivsinai/snagline/internal/controlclient"
+	"github.com/avivsinai/snagline/internal/dispatcherruntime"
 	"github.com/avivsinai/snagline/internal/edge"
 	"github.com/avivsinai/snagline/internal/identity"
 	"github.com/avivsinai/snagline/internal/securetransport"
@@ -19,17 +25,24 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	maxDispatcherCommandRequestBytes = 64 << 10
+	dispatcherTurnRetention          = 7 * 24 * time.Hour
+	dispatcherTurnCapacity           = 8192
+)
+
 type dispatcherRuntimeConfig struct {
-	DescriptorPath, CaseID, CaseCommitment, Text, PublicSummary string
-	Tenant, PrincipalID, AuthorKeyID                            string
-	DBPath, DBKey, ControlURL, TLSCert, TLSKey, ControlCA       string
-	EnvelopeTTL                                                 time.Duration
+	DescriptorPath, EventID, CaseID, CaseCommitment, Text, PublicSummary string
+	Tenant, PrincipalID, AuthorKeyID                                     string
+	DBPath, DBKey, ControlURL, TLSCert, TLSKey, ControlCA                string
+	EnvelopeTTL                                                          time.Duration
 }
 
-func parseDispatcherRuntimeConfig(args []string) (dispatcherRuntimeConfig, error) {
+func parseDispatcherRuntimeConfig(args []string, stdin io.Reader) (dispatcherRuntimeConfig, error) {
 	flags := flag.NewFlagSet("snagline-dispatcher", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	descriptor := flags.String("key-descriptor", envDispatcher("SNAGLINE_DISPATCHER_KEY_DESCRIPTOR", ""), "absolute private key descriptor")
+	requestStdin := flags.Bool("request-stdin", false, "read the complete bounded request as JSON from stdin")
 	caseID := flags.String("case-id", "", "case ID")
 	commitment := flags.String("case-commitment", "", "exact committed case commitment")
 	text := flags.String("text", "", "inert advice text")
@@ -47,12 +60,30 @@ func parseDispatcherRuntimeConfig(args []string) (dispatcherRuntimeConfig, error
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return dispatcherRuntimeConfig{}, errors.New("invalid dispatcher flags")
 	}
-	config := dispatcherRuntimeConfig{DescriptorPath: *descriptor, CaseID: *caseID, CaseCommitment: *commitment, Text: *text, PublicSummary: *publicSummary, Tenant: *tenant, PrincipalID: *principal, AuthorKeyID: *author, DBPath: *dbPath, DBKey: *dbKey, ControlURL: *controlURL, TLSCert: *tlsCert, TLSKey: *tlsKey, ControlCA: *controlCA, EnvelopeTTL: *ttl}
+	request := dispatcherruntime.CommandRequest{Submission: dispatcherruntime.Submission{CaseID: *caseID, CaseCommitment: *commitment, Text: *text, PublicSummary: *publicSummary}}
+	if *requestStdin {
+		if *caseID != "" || *commitment != "" || *text != "" || *publicSummary != "" || stdin == nil {
+			return dispatcherRuntimeConfig{}, errors.New("stdin dispatcher request cannot be combined with request flags")
+		}
+		raw, err := io.ReadAll(io.LimitReader(stdin, maxDispatcherCommandRequestBytes+1))
+		if err != nil || len(raw) == 0 || len(raw) > maxDispatcherCommandRequestBytes || !utf8.Valid(raw) {
+			return dispatcherRuntimeConfig{}, errors.New("invalid stdin dispatcher request")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			return dispatcherRuntimeConfig{}, errors.New("invalid stdin dispatcher request")
+		}
+	} else {
+		request.EventID = legacyDispatcherEventID(*caseID)
+	}
+	config := dispatcherRuntimeConfig{DescriptorPath: *descriptor, EventID: request.EventID, CaseID: request.Submission.CaseID, CaseCommitment: request.Submission.CaseCommitment, Text: request.Submission.Text, PublicSummary: request.Submission.PublicSummary, Tenant: *tenant, PrincipalID: *principal, AuthorKeyID: *author, DBPath: *dbPath, DBKey: *dbKey, ControlURL: *controlURL, TLSCert: *tlsCert, TLSKey: *tlsKey, ControlCA: *controlCA, EnvelopeTTL: *ttl}
 	return config, config.validate()
 }
 
 func (config dispatcherRuntimeConfig) validate() error {
-	if dispatcherBlank(config.DescriptorPath, config.CaseID, config.CaseCommitment, config.Text, config.PublicSummary, config.Tenant, config.PrincipalID, config.AuthorKeyID, config.DBPath, config.DBKey, config.ControlURL, config.TLSCert, config.TLSKey, config.ControlCA) || !dispatcherCommitment(config.CaseCommitment) || config.EnvelopeTTL <= 0 || config.EnvelopeTTL > 24*time.Hour {
+	request := dispatcherruntime.CommandRequest{EventID: config.EventID, Submission: dispatcherruntime.Submission{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary}}
+	if dispatcherBlank(config.DescriptorPath, config.Tenant, config.PrincipalID, config.AuthorKeyID, config.DBPath, config.DBKey, config.ControlURL, config.TLSCert, config.TLSKey, config.ControlCA) || dispatcherruntime.ValidateCommandRequest(request) != nil || config.EnvelopeTTL <= 0 || config.EnvelopeTTL > 24*time.Hour {
 		return errors.New("missing or unbounded dispatcher configuration")
 	}
 	for _, path := range []string{config.DescriptorPath, config.DBPath, config.DBKey, config.TLSCert, config.TLSKey, config.ControlCA} {
@@ -61,7 +92,7 @@ func (config dispatcherRuntimeConfig) validate() error {
 		}
 	}
 	endpoint, err := url.Parse(config.ControlURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	if err != nil || endpoint.Scheme != "https" || endpoint.Opaque != "" || endpoint.Host == "" || endpoint.User != nil || endpoint.Path != "" || endpoint.RawPath != "" || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" {
 		return errors.New("control URL must be a root HTTPS URL without credentials")
 	}
 	return nil
@@ -80,14 +111,72 @@ func runDispatcher(ctx context.Context, config dispatcherRuntimeConfig, stdout i
 		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
 	}
 	defer db.Close()
+	return runDispatcherTurn(ctx, config, finalizer, db, stdout, time.Now().UTC())
+}
+
+type dispatcherAdviceFinalizer interface {
+	FinalizeAdvice(context.Context, edge.FinalizeAdviceRequest) (edge.AdviceSubmission, error)
+	RetryAdvice(context.Context, string) (edge.AdviceSubmission, error)
+}
+
+type dispatcherTurnStore interface {
+	BindDispatcherTurn(context.Context, string, []byte, time.Time, time.Duration, int) (sspedge.DispatcherTurnBinding, error)
+	CompleteDispatcherTurn(context.Context, string, []byte, []byte, time.Time) error
+}
+
+func runDispatcherTurn(ctx context.Context, config dispatcherRuntimeConfig, finalizer dispatcherAdviceFinalizer, store dispatcherTurnStore, stdout io.Writer, now time.Time) int {
+	requestBytes, err := json.Marshal(dispatcherruntime.CommandRequest{EventID: config.EventID, Submission: dispatcherruntime.Submission{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary}})
+	if err != nil || len(requestBytes) > maxDispatcherCommandRequestBytes {
+		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+	}
+	binding, err := store.BindDispatcherTurn(ctx, config.EventID, requestBytes, now, dispatcherTurnRetention, dispatcherTurnCapacity)
+	if errors.Is(err, sspedge.ErrDispatcherTurnMismatch) {
+		return writeResult(stdout, commandResult{OK: false, Code: "turn_request_mismatch"})
+	}
+	if errors.Is(err, sspedge.ErrDispatcherTurnCapacity) {
+		return writeResult(stdout, commandResult{OK: false, Code: "replay_guard_full"})
+	}
+	if err != nil {
+		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+	}
+	if binding.Completed {
+		if !validStoredCommandResult(binding.Result) {
+			return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+		}
+		return writeCanonicalResult(stdout, binding.Result)
+	}
 	result, err := finalizer.FinalizeAdvice(ctx, edge.FinalizeAdviceRequest{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary})
 	if errors.Is(err, edge.ErrAlreadyPending) {
 		result, err = finalizer.RetryAdvice(ctx, config.CaseID)
 	}
-	if err != nil || !result.AcceptedRemote {
+	if err != nil || !result.AcceptedRemote || result.EnvelopeID == "" || result.Receipt.Revision <= 0 {
 		return writeResult(stdout, commandResult{OK: false, Code: "advice_not_accepted"})
 	}
-	return writeResult(stdout, commandResult{OK: true, Code: "accepted_remote", AdviceID: result.EnvelopeID, AuthorityRevision: result.Receipt.Revision})
+	command := commandResult{OK: true, Code: "accepted_remote", AdviceID: result.EnvelopeID, AuthorityRevision: result.Receipt.Revision}
+	resultBytes, err := json.Marshal(command)
+	if err != nil || store.CompleteDispatcherTurn(ctx, config.EventID, requestBytes, resultBytes, time.Now().UTC()) != nil {
+		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+	}
+	return writeCanonicalResult(stdout, resultBytes)
+}
+
+func validStoredCommandResult(raw []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var result commandResult
+	return decoder.Decode(&result) == nil && decoder.Decode(&struct{}{}) == io.EOF && result.OK && result.Code == "accepted_remote" && result.AdviceID != "" && result.AuthorityRevision > 0
+}
+
+func writeCanonicalResult(stdout io.Writer, raw []byte) int {
+	if _, err := stdout.Write(append(append([]byte(nil), raw...), '\n')); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func legacyDispatcherEventID(caseID string) string {
+	digest := sha256.Sum256(append([]byte("snagline/dispatcher/legacy-case/v1\x00"), []byte(caseID)...))
+	return hex.EncodeToString(digest[:])
 }
 
 func buildDispatcherFinalizer(ctx context.Context, config dispatcherRuntimeConfig, descriptor keyDescriptor) (*edge.Finalizer, *sspedge.DB, error) {
@@ -166,15 +255,4 @@ func dispatcherBlank(values ...string) bool {
 		}
 	}
 	return false
-}
-func dispatcherCommitment(value string) bool {
-	if len(value) != 71 || !strings.HasPrefix(value, "sha256:") {
-		return false
-	}
-	for _, character := range value[7:] {
-		if character < '0' || character > '9' && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
 }

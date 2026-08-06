@@ -99,6 +99,11 @@ func TestMarkAdviceAcceptedRemotePersistsOnlyExactReceipt(t *testing.T) {
 	if err := db.MarkAdviceAcceptedRemote(ctx, accepted); err != nil {
 		t.Fatalf("exact receipt replay: %v", err)
 	}
+	retried := accepted
+	retried.AcceptedAt = now.Add(time.Minute)
+	if err := db.MarkAdviceAcceptedRemote(ctx, retried); err != nil {
+		t.Fatalf("same authority receipt observed after a lost response: %v", err)
+	}
 	conflict := accepted
 	conflict.Receipt.AuthorityID = "other"
 	if err := db.MarkAdviceAcceptedRemote(ctx, conflict); err == nil {
