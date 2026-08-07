@@ -157,3 +157,14 @@ func TestCommandSubmitterFailsLoudlyOutsideLinux(t *testing.T) {
 		t.Fatalf("non-Linux submit err=%v", err)
 	}
 }
+
+func TestCommandResultAcceptsBoundedConflictCodesWithoutSuccessFields(t *testing.T) {
+	for _, code := range []string{"pending_advice_conflict", "turn_in_flight"} {
+		if !validCommandResult(Result{OK: false, Code: code}) {
+			t.Fatalf("%s was rejected", code)
+		}
+		if validCommandResult(Result{OK: false, Code: code, AdviceID: "old-advice"}) {
+			t.Fatalf("%s accepted an advice ID", code)
+		}
+	}
+}

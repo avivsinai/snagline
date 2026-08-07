@@ -13,6 +13,8 @@ import (
 	"github.com/avivsinai/snagline/internal/dispatcherruntime"
 )
 
+const testMaxConcurrency = 2
+
 const (
 	testRuntimeServerName = "runtime.svc.example"
 	testUpstreamURL       = "https://" + testRuntimeServerName + ":8443/v1/submit-inert-advice"
@@ -24,6 +26,19 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
+type blockingBody struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (body blockingBody) Read([]byte) (int, error) {
+	body.entered <- struct{}{}
+	<-body.release
+	return 0, io.EOF
+}
+
+func (blockingBody) Close() error { return nil }
+
 func TestProxyForwardsOnlyValidatedSubmissionAndTurnContext(t *testing.T) {
 	var forwarded *http.Request
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -34,7 +49,7 @@ func TestProxyForwardsOnlyValidatedSubmissionAndTurnContext(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":true,"code":"accepted_remote","advice_id":"advice-1","authority_revision":7}`))}, nil
 	})}
-	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +80,7 @@ func TestProxyForwardsCanonicalUTF8AtExactRuneBoundaries(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":true,"code":"accepted_remote","advice_id":"advice-1","authority_revision":7}`))}, nil
 	})}
-	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +101,7 @@ func TestProxyForwardsCanonicalUTF8AtExactRuneBoundaries(t *testing.T) {
 func TestProxyRejectsInvalidRequestsBeforeUpstream(t *testing.T) {
 	calls := 0
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { calls++; return nil, context.Canceled })}
-	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +127,7 @@ func TestProxyRejectsUnknownSubmissionFieldsBeforeUpstream(t *testing.T) {
 		calls++
 		return nil, context.Canceled
 	})}
-	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +162,7 @@ func TestNewRejectsAnyRuntimeURLWidening(t *testing.T) {
 		"opaque":       "https:" + testRuntimeServerName + ":8443" + SubmitPath,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := New(Config{UpstreamURL: upstream, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second}); err == nil {
+			if _, err := New(Config{UpstreamURL: upstream, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency}); err == nil {
 				t.Fatalf("New accepted widened runtime URL %q", upstream)
 			}
 		})
@@ -166,7 +181,7 @@ func TestProxyNeverResendsPostAcross307Or308(t *testing.T) {
 					Body:       io.NopCloser(strings.NewReader(`{"ok":false,"code":"redirect_rejected"}`)),
 				}, nil
 			})}
-			proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+			proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,7 +204,7 @@ func TestProxyRejectsWrongMethodAndPathBeforeUpstream(t *testing.T) {
 		calls++
 		return nil, context.Canceled
 	})}
-	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second})
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,5 +232,84 @@ func TestProxyRejectsWrongMethodAndPathBeforeUpstream(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("wrong method or path reached upstream %d times", calls)
+	}
+}
+
+func TestProxyRejectsOverCapBeforePathOrBodyDecode(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("blocked request reached upstream")
+		return nil, context.Canceled
+	})}
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	first := httptest.NewRequest(http.MethodPost, SubmitPath, nil)
+	first.Body = blockingBody{entered: entered, release: release}
+	first.Header.Set("Content-Type", "application/json")
+	first.Header.Set("X-Snagline-Buzz-Event-ID", strings.Repeat("a", 64))
+	firstResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		proxy.ServeHTTP(response, first)
+		firstResult <- response
+	}()
+	<-entered
+
+	second := httptest.NewRequest(http.MethodGet, "/other", nil)
+	secondResult := httptest.NewRecorder()
+	proxy.ServeHTTP(secondResult, second)
+	if secondResult.Code != http.StatusServiceUnavailable || !strings.Contains(secondResult.Body.String(), `"code":"proxy_busy"`) {
+		t.Fatalf("status=%d body=%s", secondResult.Code, secondResult.Body.String())
+	}
+
+	close(release)
+	if response := <-firstResult; response.Code != http.StatusBadRequest {
+		t.Fatalf("first status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProxyRejectsEscapedAndEmptyQueryPathsBeforeUpstream(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, context.Canceled
+	})}
+	proxy, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: testMaxConcurrency})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"case_id":"case-1","case_commitment":"sha256:` + strings.Repeat("a", 64) + `","text":"x","public_summary":"x"}`
+	for name, mutate := range map[string]func(*http.Request){
+		"escaped path": func(request *http.Request) { request.URL.RawPath = "/v1/%73ubmit-inert-advice" },
+		"empty query":  func(request *http.Request) { request.URL.ForceQuery = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, SubmitPath, strings.NewReader(body))
+			mutate(request)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Snagline-Buzz-Event-ID", strings.Repeat("b", 64))
+			response := httptest.NewRecorder()
+			proxy.ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+	if calls != 0 {
+		t.Fatalf("unexpected upstream calls=%d", calls)
+	}
+}
+
+func TestNewRejectsUnboundedConcurrency(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.Canceled
+	})}
+	for _, maxConcurrency := range []int{0, 17} {
+		if _, err := New(Config{UpstreamURL: testUpstreamURL, RuntimeServerName: testRuntimeServerName, Client: client, RequestTimeout: time.Second, MaxConcurrency: maxConcurrency}); err == nil {
+			t.Fatalf("New accepted max concurrency %d", maxConcurrency)
+		}
 	}
 }

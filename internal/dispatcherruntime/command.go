@@ -141,7 +141,7 @@ func validCommandResult(result Result) bool {
 		return false
 	}
 	switch result.Code {
-	case "turn_request_mismatch", "replay_guard_full", "advice_not_accepted", "runtime_unavailable":
+	case "turn_request_mismatch", "pending_advice_conflict", "turn_in_flight", "replay_guard_full", "advice_not_accepted", "runtime_unavailable":
 		return true
 	default:
 		return false

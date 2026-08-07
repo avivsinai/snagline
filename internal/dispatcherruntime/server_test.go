@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,19 @@ func newServer(t *testing.T, submitter Submitter, cap int) http.Handler {
 	}
 	return server
 }
+
+type blockingBody struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (body blockingBody) Read([]byte) (int, error) {
+	body.entered <- struct{}{}
+	<-body.release
+	return 0, io.EOF
+}
+
+func (blockingBody) Close() error { return nil }
 
 func TestServerAcceptsOneExactInertAdviceFromPinnedMutualTLSIdentity(t *testing.T) {
 	submitter := &fakeSubmitter{}
@@ -176,12 +190,75 @@ func TestServerEnforcesPerCaseSingleFlightAndGlobalCap(t *testing.T) {
 	}
 }
 
+func TestServerRejectsOverCapBeforePathAuthOrBodyDecode(t *testing.T) {
+	server := newServer(t, &fakeSubmitter{}, 1)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	first := httptest.NewRequest(http.MethodPost, "https://runtime.example"+SubmitPath, nil)
+	first.Body = blockingBody{entered: entered, release: release}
+	first.Header.Set("Content-Type", "application/json")
+	first.Header.Set("X-Snagline-Buzz-Event-ID", strings.Repeat("a", 64))
+	certificate := &x509.Certificate{Raw: []byte{1}, DNSNames: []string{"snagline-dispatcher-proxy"}}
+	first.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}, VerifiedChains: [][]*x509.Certificate{{certificate}}}
+	firstResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, first)
+		firstResult <- response
+	}()
+	<-entered
+
+	second := httptest.NewRequest(http.MethodGet, "https://runtime.example/other", nil)
+	secondResult := httptest.NewRecorder()
+	server.ServeHTTP(secondResult, second)
+	if secondResult.Code != http.StatusServiceUnavailable || !strings.Contains(secondResult.Body.String(), `"code":"runtime_busy"`) {
+		t.Fatalf("status=%d body=%s", secondResult.Code, secondResult.Body.String())
+	}
+
+	close(release)
+	if response := <-firstResult; response.Code != http.StatusBadRequest {
+		t.Fatalf("first status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerRejectsEscapedAndEmptyQueryPathsBeforeSubmission(t *testing.T) {
+	raw, _ := json.Marshal(validRequest)
+	for name, mutate := range map[string]func(*http.Request){
+		"escaped path": func(request *http.Request) { request.URL.RawPath = "/v1/%73ubmit-inert-advice" },
+		"empty query":  func(request *http.Request) { request.URL.ForceQuery = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			submitter := &fakeSubmitter{}
+			request := httptest.NewRequest(http.MethodPost, "https://runtime.example"+SubmitPath, strings.NewReader(string(raw)))
+			mutate(request)
+			response := httptest.NewRecorder()
+			newServer(t, submitter, 1).ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound || len(submitter.calls) != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, len(submitter.calls), response.Body.String())
+			}
+		})
+	}
+}
+
 func TestServerMapsDurableFullTurnMismatch(t *testing.T) {
 	submitter := &fakeSubmitter{result: Result{OK: false, Code: "turn_request_mismatch"}}
 	raw, _ := json.Marshal(validRequest)
 	w := requestWithEvent(t, newServer(t, submitter, 2), string(raw), "snagline-dispatcher-proxy", strings.Repeat("f", 64))
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "turn_request_mismatch") || len(submitter.calls) != 1 {
 		t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), len(submitter.calls))
+	}
+}
+
+func TestServerMapsBoundedTurnConflictsWithoutClaimingAcceptance(t *testing.T) {
+	raw, _ := json.Marshal(validRequest)
+	for _, code := range []string{"pending_advice_conflict", "turn_in_flight"} {
+		t.Run(code, func(t *testing.T) {
+			submitter := &fakeSubmitter{result: Result{OK: false, Code: code}}
+			w := requestWithEvent(t, newServer(t, submitter, 2), string(raw), "snagline-dispatcher-proxy", strings.Repeat("e", 64))
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"ok":false`) || !strings.Contains(w.Body.String(), code) || strings.Contains(w.Body.String(), "accepted_remote") || len(submitter.calls) != 1 {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), len(submitter.calls))
+			}
+		})
 	}
 }
 

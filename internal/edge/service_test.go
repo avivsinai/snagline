@@ -166,6 +166,9 @@ func TestFinalizeAdviceLostResponseRetriesExactBytesAndNeverCreatesSecondAdvice(
 	if _, err := finalizer.FinalizeAdvice(context.Background(), request); !errors.Is(err, ErrAlreadyPending) {
 		t.Fatalf("second finalization error = %v, want ErrAlreadyPending", err)
 	}
+	if len(gateway.submitted) != 1 {
+		t.Fatalf("identical pending finalization submitted %d times, want 1", len(gateway.submitted))
+	}
 	gateway.err = nil
 	retried, err := finalizer.RetryAdvice(context.Background(), "case-1")
 	if err != nil || !retried.AcceptedRemote || string(gateway.submitted[1]) != string(raw) {
@@ -173,6 +176,39 @@ func TestFinalizeAdviceLostResponseRetriesExactBytesAndNeverCreatesSecondAdvice(
 	}
 	if len(store.acceptedAdvice) != 1 {
 		t.Fatalf("accepted advice = %#v", store.acceptedAdvice)
+	}
+}
+
+func TestFinalizeAdviceRejectsConflictingPendingAdviceWithoutResubmitting(t *testing.T) {
+	store := &fakeStore{cases: map[string]CaseRecord{"case-1": {CaseID: "case-1", Commitment: digest("c"), Registry: RegistryCoordinates{RoutingEpoch: 7, Revision: 12, Hash: digest("b")}, ExpiresAt: edgeNow.Add(time.Hour), Committed: true}}}
+	gateway := &fakeGateway{store: store, err: errors.New("lost response")}
+	finalizer := newFinalizer(t, store, gateway)
+	request := FinalizeAdviceRequest{CaseID: "case-1", CaseCommitment: digest("c"), Text: "Confidential advice detail.", PublicSummary: "Use the bounded next step."}
+
+	if _, err := finalizer.FinalizeAdvice(context.Background(), request); err == nil {
+		t.Fatal("initial finalization unexpectedly succeeded")
+	}
+	if len(store.pendingAdvice) != 1 || len(gateway.submitted) != 1 {
+		t.Fatalf("initial finalization pending=%d submissions=%d, want one each", len(store.pendingAdvice), len(gateway.submitted))
+	}
+	raw := append([]byte(nil), store.pendingAdvice[0].Raw...)
+
+	for name, conflicting := range map[string]FinalizeAdviceRequest{
+		"text":       {CaseID: request.CaseID, CaseCommitment: request.CaseCommitment, Text: "Changed confidential advice detail.", PublicSummary: request.PublicSummary},
+		"summary":    {CaseID: request.CaseID, CaseCommitment: request.CaseCommitment, Text: request.Text, PublicSummary: "Changed bounded next step."},
+		"commitment": {CaseID: request.CaseID, CaseCommitment: digest("d"), Text: request.Text, PublicSummary: request.PublicSummary},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := finalizer.FinalizeAdvice(context.Background(), conflicting); !errors.Is(err, ErrPendingAdviceConflict) {
+				t.Fatalf("conflicting finalization error = %v, want ErrPendingAdviceConflict", err)
+			}
+			if len(gateway.submitted) != 1 {
+				t.Fatalf("conflicting finalization submitted %d times, want 1", len(gateway.submitted))
+			}
+			if got := store.pendingAdvice[0].Raw; string(got) != string(raw) {
+				t.Fatalf("pending advice changed: got %q, want %q", got, raw)
+			}
+		})
 	}
 }
 

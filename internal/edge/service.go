@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("edge: not found")
-	ErrNotCommitted   = errors.New("edge: case is not committed")
-	ErrAlreadyPending = errors.New("edge: case already has a pending submission")
+	ErrNotFound              = errors.New("edge: not found")
+	ErrNotCommitted          = errors.New("edge: case is not committed")
+	ErrAlreadyPending        = errors.New("edge: case already has a pending submission")
+	ErrPendingAdviceConflict = errors.New("edge: pending advice conflicts with finalization request")
 )
 
 var sha256Commitment = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -424,9 +425,16 @@ func (s *Finalizer) FinalizeAdvice(ctx context.Context, request FinalizeAdviceRe
 	if err := validateFinalizeAdviceRequest(request); err != nil {
 		return AdviceSubmission{}, err
 	}
-	if _, exists, err := s.spool.LoadPendingAdvice(ctx, request.CaseID); err != nil {
+	if pending, exists, err := s.spool.LoadPendingAdvice(ctx, request.CaseID); err != nil {
 		return AdviceSubmission{}, fmt.Errorf("edge: load pending advice: %w", err)
 	} else if exists {
+		matches, err := pendingAdviceMatchesRequest(pending.Raw, request, s.clock().UTC())
+		if err != nil {
+			return AdviceSubmission{}, fmt.Errorf("edge: decode pending advice: %w", err)
+		}
+		if !matches {
+			return AdviceSubmission{}, ErrPendingAdviceConflict
+		}
 		return AdviceSubmission{}, ErrAlreadyPending
 	}
 	caseRecord, ok, err := s.cases.GetCase(ctx, request.CaseID)
@@ -525,6 +533,35 @@ func validateFinalizeAdviceRequest(request FinalizeAdviceRequest) error {
 		return errors.New("edge: advice request is invalid")
 	}
 	return nil
+}
+
+// pendingAdviceMatchesRequest decodes the exact internally signed wire rather
+// than trusting duplicate spool metadata. EnvelopeCommitment supplies the same
+// strict structural and family validation used by SSP verification; the
+// encrypted spool owns the internally produced signature bytes.
+func pendingAdviceMatchesRequest(raw []byte, request FinalizeAdviceRequest, now time.Time) (bool, error) {
+	if _, err := ssp.EnvelopeCommitment(raw, now); err != nil {
+		return false, err
+	}
+	var envelope ssp.Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return false, err
+	}
+	if envelope.Schema != ssp.FamilyAdvice {
+		return false, errors.New("stored envelope is not advice")
+	}
+	var body struct {
+		CaseCommitment string `json:"case_commitment"`
+		Text           string `json:"text"`
+		PublicSummary  string `json:"public_summary"`
+	}
+	if err := json.Unmarshal(envelope.Body, &body); err != nil {
+		return false, err
+	}
+	return envelope.CaseID == request.CaseID &&
+		body.CaseCommitment == request.CaseCommitment &&
+		body.Text == request.Text &&
+		body.PublicSummary == request.PublicSummary, nil
 }
 
 func validOpaque(value string) bool {

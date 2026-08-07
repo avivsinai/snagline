@@ -29,12 +29,14 @@ type Config struct {
 	RuntimeServerName string
 	Client            *http.Client
 	RequestTimeout    time.Duration
+	MaxConcurrency    int
 }
 
 type Proxy struct {
 	upstream       *url.URL
 	client         *http.Client
 	requestTimeout time.Duration
+	handlerSlots   chan struct{}
 }
 
 func New(config Config) (*Proxy, error) {
@@ -47,16 +49,26 @@ func New(config Config) (*Proxy, error) {
 	if config.Client == nil || config.RequestTimeout <= 0 || config.RequestTimeout > time.Minute {
 		return nil, errors.New("dispatcher proxy: bounded client and timeout are required")
 	}
+	if config.MaxConcurrency < 1 || config.MaxConcurrency > 16 {
+		return nil, errors.New("dispatcher proxy: max concurrency must be between 1 and 16")
+	}
 	client := *config.Client
 	client.CheckRedirect = rejectRedirect
-	return &Proxy{upstream: upstream, client: &client, requestTimeout: config.RequestTimeout}, nil
+	return &Proxy{upstream: upstream, client: &client, requestTimeout: config.RequestTimeout, handlerSlots: make(chan struct{}, config.MaxConcurrency)}, nil
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if request.Method != http.MethodPost || request.URL.Path != SubmitPath || request.URL.RawQuery != "" || request.Header.Get("Content-Type") != "application/json" {
+	select {
+	case p.handlerSlots <- struct{}{}:
+		defer func() { <-p.handlerSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "proxy_busy")
+		return
+	}
+	if request.Method != http.MethodPost || request.URL.Path != SubmitPath || request.URL.RawPath != "" || request.URL.RawQuery != "" || request.URL.ForceQuery || request.Header.Get("Content-Type") != "application/json" {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
