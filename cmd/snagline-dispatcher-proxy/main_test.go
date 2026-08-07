@@ -10,9 +10,10 @@ func TestLoadConfigRequiresRuntimeIdentityAndCredentials(t *testing.T) {
 		"SNAGLINE_DISPATCHER_PROXY_TLS_KEY":       "/run/proxy/proxy-client.key",
 		"SNAGLINE_DISPATCHER_RUNTIME_CA":          "/run/proxy/runtime-ca.pem",
 		"SNAGLINE_DISPATCHER_PROXY_TIMEOUT":       "20s",
+		"SNAGLINE_DISPATCHER_PROXY_GLOBAL_CAP":    "4",
 	}
 	settings, err := loadConfig(func(name string) string { return values[name] })
-	if err != nil || settings.listenAddress != defaultListenAddress {
+	if err != nil || settings.listenAddress != defaultListenAddress || settings.maxConcurrency != 4 {
 		t.Fatalf("settings=%+v err=%v", settings, err)
 	}
 	values["SNAGLINE_DISPATCHER_RUNTIME_SERVER_NAME"] = ""
@@ -23,5 +24,12 @@ func TestLoadConfigRequiresRuntimeIdentityAndCredentials(t *testing.T) {
 	values["SNAGLINE_DISPATCHER_PROXY_LISTEN"] = "0.0.0.0:9090"
 	if _, err := loadConfig(func(name string) string { return values[name] }); err == nil {
 		t.Fatal("listen drift accepted")
+	}
+	values["SNAGLINE_DISPATCHER_PROXY_LISTEN"] = ""
+	for _, cap := range []string{"", "0", "17", "not-a-number"} {
+		values["SNAGLINE_DISPATCHER_PROXY_GLOBAL_CAP"] = cap
+		if _, err := loadConfig(func(name string) string { return values[name] }); err == nil {
+			t.Fatalf("global cap %q accepted", cap)
+		}
 	}
 }

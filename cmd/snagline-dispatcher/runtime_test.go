@@ -64,25 +64,67 @@ func TestParseDispatcherRuntimeConfigRejectsPlaintextControlEndpoint(t *testing.
 type fakeDispatcherTurnStore struct {
 	request, result []byte
 	completed       bool
+	claimToken      string
+	claimActive     bool
+	claimNumber     int
+	abandonCalls    int
+	abandonErr      error
+	releaseCalls    int
+	releaseErr      error
 }
 
-func (s *fakeDispatcherTurnStore) BindDispatcherTurn(_ context.Context, _ string, request []byte, _ time.Time, _ time.Duration, _ int) (sspedge.DispatcherTurnBinding, error) {
+func (s *fakeDispatcherTurnStore) BindDispatcherTurn(_ context.Context, _ string, request []byte, _ time.Time, _, _ time.Duration, _ int) (sspedge.DispatcherTurnBinding, error) {
 	if s.request == nil {
 		s.request = append([]byte(nil), request...)
-		return sspedge.DispatcherTurnBinding{}, nil
 	}
 	if !bytes.Equal(s.request, request) {
 		return sspedge.DispatcherTurnBinding{}, sspedge.ErrDispatcherTurnMismatch
 	}
-	return sspedge.DispatcherTurnBinding{Completed: s.completed, Result: append([]byte(nil), s.result...)}, nil
+	if s.completed {
+		return sspedge.DispatcherTurnBinding{Completed: true, Result: append([]byte(nil), s.result...)}, nil
+	}
+	if s.claimActive {
+		return sspedge.DispatcherTurnBinding{InFlight: true}, nil
+	}
+	s.claimNumber++
+	s.claimToken = strings.Repeat("a", 63) + string("0123456789abcdef"[s.claimNumber%16])
+	s.claimActive = true
+	return sspedge.DispatcherTurnBinding{ClaimToken: s.claimToken}, nil
 }
 
-func (s *fakeDispatcherTurnStore) CompleteDispatcherTurn(_ context.Context, _ string, request, result []byte, _ time.Time) error {
-	if !bytes.Equal(s.request, request) {
+func (s *fakeDispatcherTurnStore) CompleteDispatcherTurn(_ context.Context, _ string, request, result []byte, _ time.Time, claim string) error {
+	if !bytes.Equal(s.request, request) || !s.claimActive || claim != s.claimToken {
 		return sspedge.ErrDispatcherTurnMismatch
 	}
 	s.result = append([]byte(nil), result...)
 	s.completed = true
+	s.claimActive = false
+	return nil
+}
+
+func (s *fakeDispatcherTurnStore) ReleaseDispatcherTurnClaim(_ context.Context, _ string, request []byte, claim string) error {
+	s.releaseCalls++
+	if s.releaseErr != nil {
+		return s.releaseErr
+	}
+	if !bytes.Equal(s.request, request) || s.completed || !s.claimActive || claim != s.claimToken {
+		return sspedge.ErrDispatcherTurnMismatch
+	}
+	s.claimActive = false
+	return nil
+}
+
+func (s *fakeDispatcherTurnStore) AbandonDispatcherTurn(_ context.Context, _ string, request []byte, claim string) error {
+	s.abandonCalls++
+	if s.abandonErr != nil {
+		return s.abandonErr
+	}
+	if !bytes.Equal(s.request, request) || s.completed || !s.claimActive || claim != s.claimToken {
+		return sspedge.ErrDispatcherTurnMismatch
+	}
+	s.request = nil
+	s.result = nil
+	s.claimActive = false
 	return nil
 }
 
@@ -156,6 +198,90 @@ func TestRunDispatcherRetriesPendingExactAdviceAfterAmbiguousControlResponse(t *
 	stdout.Reset()
 	if code := runDispatcherTurn(context.Background(), config, finalizer, store, &stdout, now.Add(time.Minute)); code != 0 || !store.completed || finalizer.finalizeCalls != 2 || finalizer.retryCalls != 1 {
 		t.Fatalf("retry code=%d completed=%v finalize=%d retry=%d output=%s", code, store.completed, finalizer.finalizeCalls, finalizer.retryCalls, stdout.String())
+	}
+}
+
+type failingDispatcherFinalizer struct {
+	err        error
+	retryCalls int
+}
+
+func (f *failingDispatcherFinalizer) FinalizeAdvice(context.Context, edge.FinalizeAdviceRequest) (edge.AdviceSubmission, error) {
+	return edge.AdviceSubmission{}, f.err
+}
+
+func (f *failingDispatcherFinalizer) RetryAdvice(context.Context, string) (edge.AdviceSubmission, error) {
+	f.retryCalls++
+	return edge.AdviceSubmission{}, errors.New("unexpected retry")
+}
+
+func TestRunDispatcherAbandonsOnlyDeterministicPreSpoolFailures(t *testing.T) {
+	config := dispatcherRuntimeConfig{EventID: strings.Repeat("e", 64), CaseID: "case-1", CaseCommitment: "sha256:" + strings.Repeat("a", 64), Text: "confidential", PublicSummary: "public"}
+	now := time.Date(2026, 8, 6, 10, 11, 12, 13, time.UTC)
+	for name, test := range map[string]struct {
+		err      error
+		wantCode string
+		abandon  bool
+		release  bool
+	}{
+		"conflicting pending advice": {err: edge.ErrPendingAdviceConflict, wantCode: "pending_advice_conflict", abandon: true},
+		"case absent":                {err: edge.ErrNotFound, wantCode: "advice_not_accepted", abandon: true},
+		"case not committed":         {err: edge.ErrNotCommitted, wantCode: "advice_not_accepted", abandon: true},
+		"ambiguous control failure":  {err: errors.New("ambiguous control response"), wantCode: "advice_not_accepted", release: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeDispatcherTurnStore{}
+			finalizer := &failingDispatcherFinalizer{err: test.err}
+			var stdout bytes.Buffer
+			if code := runDispatcherTurn(context.Background(), config, finalizer, store, &stdout, now); code == 0 || !strings.Contains(stdout.String(), test.wantCode) {
+				t.Fatalf("code=%d output=%s", code, stdout.String())
+			}
+			if got := store.abandonCalls == 1; got != test.abandon {
+				t.Fatalf("abandon=%v calls=%d", got, store.abandonCalls)
+			}
+			if got := store.releaseCalls == 1; got != test.release {
+				t.Fatalf("release=%v calls=%d", got, store.releaseCalls)
+			}
+			if test.abandon && store.request != nil {
+				t.Fatal("deterministic failure retained reservation")
+			}
+			if !test.abandon && store.request == nil {
+				t.Fatal("ambiguous failure abandoned reservation")
+			}
+			if test.release && store.claimActive {
+				t.Fatal("ambiguous failure retained active execution claim")
+			}
+			if finalizer.retryCalls != 0 {
+				t.Fatalf("unexpected retry calls=%d", finalizer.retryCalls)
+			}
+		})
+	}
+}
+
+func TestRunDispatcherDoesNotExecuteAnAlreadyClaimedTurn(t *testing.T) {
+	config := dispatcherRuntimeConfig{EventID: strings.Repeat("b", 64), CaseID: "case-1", CaseCommitment: "sha256:" + strings.Repeat("a", 64), Text: "confidential", PublicSummary: "public"}
+	store := &fakeDispatcherTurnStore{}
+	request, err := json.Marshal(dispatcherruntime.CommandRequest{EventID: config.EventID, Submission: dispatcherruntime.Submission{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.request = request
+	store.claimActive = true
+	store.claimToken = strings.Repeat("c", 64)
+	finalizer := &fakeDispatcherFinalizer{}
+	var stdout bytes.Buffer
+	if code := runDispatcherTurn(context.Background(), config, finalizer, store, &stdout, time.Now().UTC()); code == 0 || !strings.Contains(stdout.String(), "turn_in_flight") || finalizer.calls != 0 {
+		t.Fatalf("code=%d calls=%d output=%s", code, finalizer.calls, stdout.String())
+	}
+}
+
+func TestRunDispatcherFailsClosedWhenDeterministicAbandonmentFails(t *testing.T) {
+	config := dispatcherRuntimeConfig{EventID: strings.Repeat("f", 64), CaseID: "case-1", CaseCommitment: "sha256:" + strings.Repeat("a", 64), Text: "confidential", PublicSummary: "public"}
+	store := &fakeDispatcherTurnStore{abandonErr: errors.New("database unavailable")}
+	finalizer := &failingDispatcherFinalizer{err: edge.ErrPendingAdviceConflict}
+	var stdout bytes.Buffer
+	if code := runDispatcherTurn(context.Background(), config, finalizer, store, &stdout, time.Now().UTC()); code == 0 || !strings.Contains(stdout.String(), "runtime_unavailable") || strings.Contains(stdout.String(), "pending_advice_conflict") {
+		t.Fatalf("code=%d output=%s", code, stdout.String())
 	}
 }
 

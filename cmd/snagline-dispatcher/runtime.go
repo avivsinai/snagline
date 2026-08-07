@@ -28,6 +28,7 @@ import (
 const (
 	maxDispatcherCommandRequestBytes = 64 << 10
 	dispatcherTurnRetention          = 7 * 24 * time.Hour
+	dispatcherTurnClaimTTL           = 2 * time.Minute
 	dispatcherTurnCapacity           = 8192
 )
 
@@ -120,8 +121,10 @@ type dispatcherAdviceFinalizer interface {
 }
 
 type dispatcherTurnStore interface {
-	BindDispatcherTurn(context.Context, string, []byte, time.Time, time.Duration, int) (sspedge.DispatcherTurnBinding, error)
-	CompleteDispatcherTurn(context.Context, string, []byte, []byte, time.Time) error
+	BindDispatcherTurn(context.Context, string, []byte, time.Time, time.Duration, time.Duration, int) (sspedge.DispatcherTurnBinding, error)
+	ReleaseDispatcherTurnClaim(context.Context, string, []byte, string) error
+	AbandonDispatcherTurn(context.Context, string, []byte, string) error
+	CompleteDispatcherTurn(context.Context, string, []byte, []byte, time.Time, string) error
 }
 
 func runDispatcherTurn(ctx context.Context, config dispatcherRuntimeConfig, finalizer dispatcherAdviceFinalizer, store dispatcherTurnStore, stdout io.Writer, now time.Time) int {
@@ -129,7 +132,7 @@ func runDispatcherTurn(ctx context.Context, config dispatcherRuntimeConfig, fina
 	if err != nil || len(requestBytes) > maxDispatcherCommandRequestBytes {
 		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
 	}
-	binding, err := store.BindDispatcherTurn(ctx, config.EventID, requestBytes, now, dispatcherTurnRetention, dispatcherTurnCapacity)
+	binding, err := store.BindDispatcherTurn(ctx, config.EventID, requestBytes, now, dispatcherTurnRetention, dispatcherTurnClaimTTL, dispatcherTurnCapacity)
 	if errors.Is(err, sspedge.ErrDispatcherTurnMismatch) {
 		return writeResult(stdout, commandResult{OK: false, Code: "turn_request_mismatch"})
 	}
@@ -145,16 +148,40 @@ func runDispatcherTurn(ctx context.Context, config dispatcherRuntimeConfig, fina
 		}
 		return writeCanonicalResult(stdout, binding.Result)
 	}
+	if binding.InFlight {
+		return writeResult(stdout, commandResult{OK: false, Code: "turn_in_flight"})
+	}
+	if binding.ClaimToken == "" {
+		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+	}
 	result, err := finalizer.FinalizeAdvice(ctx, edge.FinalizeAdviceRequest{CaseID: config.CaseID, CaseCommitment: config.CaseCommitment, Text: config.Text, PublicSummary: config.PublicSummary})
 	if errors.Is(err, edge.ErrAlreadyPending) {
 		result, err = finalizer.RetryAdvice(ctx, config.CaseID)
 	}
-	if err != nil || !result.AcceptedRemote || result.EnvelopeID == "" || result.Receipt.Revision <= 0 {
+	if errors.Is(err, edge.ErrPendingAdviceConflict) {
+		if store.AbandonDispatcherTurn(ctx, config.EventID, requestBytes, binding.ClaimToken) != nil {
+			return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+		}
+		return writeResult(stdout, commandResult{OK: false, Code: "pending_advice_conflict"})
+	}
+	if errors.Is(err, edge.ErrNotFound) || errors.Is(err, edge.ErrNotCommitted) {
+		if store.AbandonDispatcherTurn(ctx, config.EventID, requestBytes, binding.ClaimToken) != nil {
+			return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+		}
+		return writeResult(stdout, commandResult{OK: false, Code: "advice_not_accepted"})
+	}
+	if err != nil {
+		if store.ReleaseDispatcherTurnClaim(ctx, config.EventID, requestBytes, binding.ClaimToken) != nil {
+			return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
+		}
+		return writeResult(stdout, commandResult{OK: false, Code: "advice_not_accepted"})
+	}
+	if !result.AcceptedRemote || result.EnvelopeID == "" || result.Receipt.Revision <= 0 {
 		return writeResult(stdout, commandResult{OK: false, Code: "advice_not_accepted"})
 	}
 	command := commandResult{OK: true, Code: "accepted_remote", AdviceID: result.EnvelopeID, AuthorityRevision: result.Receipt.Revision}
 	resultBytes, err := json.Marshal(command)
-	if err != nil || store.CompleteDispatcherTurn(ctx, config.EventID, requestBytes, resultBytes, time.Now().UTC()) != nil {
+	if err != nil || store.CompleteDispatcherTurn(ctx, config.EventID, requestBytes, resultBytes, time.Now().UTC(), binding.ClaimToken) != nil {
 		return writeResult(stdout, commandResult{OK: false, Code: "runtime_unavailable"})
 	}
 	return writeCanonicalResult(stdout, resultBytes)

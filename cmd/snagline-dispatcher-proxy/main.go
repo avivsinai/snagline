@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ type config struct {
 	privateKey        string
 	rootCA            string
 	timeout           time.Duration
+	maxConcurrency    int
 }
 
 func main() {
@@ -56,6 +58,7 @@ func run() error {
 		RuntimeServerName: settings.runtimeServerName,
 		Client:            client,
 		RequestTimeout:    settings.timeout,
+		MaxConcurrency:    settings.maxConcurrency,
 	})
 	if err != nil {
 		return err
@@ -92,7 +95,8 @@ func loadConfig(lookup func(string) string) (config, error) {
 		settings.listenAddress = defaultListenAddress
 	}
 	settings.timeout, _ = time.ParseDuration(strings.TrimSpace(lookup("SNAGLINE_DISPATCHER_PROXY_TIMEOUT")))
-	if settings.listenAddress != defaultListenAddress || settings.runtimeURL == "" || settings.runtimeServerName == "" || settings.certificate == "" || settings.privateKey == "" || settings.rootCA == "" || settings.timeout <= 0 || settings.timeout > time.Minute {
+	settings.maxConcurrency, _ = strconv.Atoi(strings.TrimSpace(lookup("SNAGLINE_DISPATCHER_PROXY_GLOBAL_CAP")))
+	if settings.listenAddress != defaultListenAddress || settings.runtimeURL == "" || settings.runtimeServerName == "" || settings.certificate == "" || settings.privateKey == "" || settings.rootCA == "" || settings.timeout <= 0 || settings.timeout > time.Minute || settings.maxConcurrency < 1 || settings.maxConcurrency > 16 {
 		return config{}, errors.New("snagline dispatcher proxy: incomplete or invalid configuration")
 	}
 	return settings, nil

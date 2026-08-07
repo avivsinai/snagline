@@ -51,11 +51,10 @@ type Config struct {
 type Server struct {
 	submitter      Submitter
 	proxyDNSName   string
-	globalCap      int
 	requestTimeout time.Duration
+	handlerSlots   chan struct{}
 
 	mu          sync.Mutex
-	active      int
 	activeCases map[string]struct{}
 }
 
@@ -76,8 +75,8 @@ func New(config Config) (*Server, error) {
 	return &Server{
 		submitter:      config.Submitter,
 		proxyDNSName:   proxyDNSName,
-		globalCap:      config.GlobalConcurrency,
 		requestTimeout: config.RequestTimeout,
+		handlerSlots:   make(chan struct{}, config.GlobalConcurrency),
 		activeCases:    make(map[string]struct{}),
 	}, nil
 }
@@ -86,7 +85,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if r.URL.Path != SubmitPath || r.URL.RawQuery != "" || r.Method != http.MethodPost {
+	select {
+	case s.handlerSlots <- struct{}{}:
+		defer func() { <-s.handlerSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "runtime_busy")
+		return
+	}
+	if r.URL.Path != SubmitPath || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.ForceQuery || r.Method != http.MethodPost {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
@@ -138,7 +144,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !result.OK {
 		switch result.Code {
-		case "turn_request_mismatch":
+		case "turn_request_mismatch", "pending_advice_conflict", "turn_in_flight":
 			writeError(w, http.StatusConflict, result.Code)
 		case "replay_guard_full":
 			writeError(w, http.StatusServiceUnavailable, result.Code)
@@ -173,10 +179,6 @@ func (s *Server) acquire(submission Submission) (int, string) {
 	if _, exists := s.activeCases[submission.CaseID]; exists {
 		return http.StatusConflict, "case_in_flight"
 	}
-	if s.active >= s.globalCap {
-		return http.StatusServiceUnavailable, "runtime_busy"
-	}
-	s.active++
 	s.activeCases[submission.CaseID] = struct{}{}
 	return 0, ""
 }
@@ -184,7 +186,6 @@ func (s *Server) acquire(submission Submission) (int, string) {
 func (s *Server) release(caseID string) {
 	s.mu.Lock()
 	delete(s.activeCases, caseID)
-	s.active--
 	s.mu.Unlock()
 }
 
