@@ -197,7 +197,7 @@ func TestPristineAuthorityEdgeAndBuzzRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	channels := pristineChannels{"support": "11111111-1111-1111-1111-111111111111"}
-	projector, err := buzz.NewProjector(buzz.ProjectorConfig{Source: buzz.AuthoritySource{Store: store, TenantID: edgeID.TenantID}, Verifier: buzzVerifier, Channels: channels, Store: buzz.NewMemoryStore(), Signer: buzzSigner, Relay: client, Clock: func() time.Time { return now }})
+	projector, err := buzz.NewProjector(buzz.ProjectorConfig{Source: buzz.AuthoritySource{Store: store, TenantID: edgeID.TenantID}, Verifier: buzzVerifier, Channels: channels, Store: buzz.NewMemoryStore(), Signer: buzzSigner, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: client, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestPristineAuthorityEdgeAndBuzzRecovery(t *testing.T) {
 	outage.Store(false)
 	// A new disposable projector has no memory of the failed attempt. Its
 	// recovery succeeds only because it reconstructs both facts from PostgreSQL.
-	recoveredProjector, err := buzz.NewProjector(buzz.ProjectorConfig{Source: buzz.AuthoritySource{Store: store, TenantID: edgeID.TenantID}, Verifier: buzzVerifier, Channels: channels, Store: buzz.NewMemoryStore(), Signer: buzzSigner, Relay: client, Clock: func() time.Time { return now }})
+	recoveredProjector, err := buzz.NewProjector(buzz.ProjectorConfig{Source: buzz.AuthoritySource{Store: store, TenantID: edgeID.TenantID}, Verifier: buzzVerifier, Channels: channels, Store: buzz.NewMemoryStore(), Signer: buzzSigner, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: client, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

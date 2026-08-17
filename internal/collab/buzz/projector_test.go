@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,8 @@ import (
 
 var projectorNow = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 
+const validCaseMentionPubKey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
 func TestProjectorPreparesOnceAndRetriesExactPersistedBuzzBytes(t *testing.T) {
 	caseRecord := testCaseRecord(1, "case-1", "case-envelope-1", "support/sre")
 	source := &fakeFactSource{records: []CommittedFact{caseRecord}}
@@ -28,7 +31,7 @@ func TestProjectorPreparesOnceAndRetriesExactPersistedBuzzBytes(t *testing.T) {
 	signer := &fakeSigner{}
 	relay := &fakeRelay{failures: 1}
 	projector, err := NewProjector(ProjectorConfig{
-		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: signer, Relay: relay,
+		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: signer, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -49,7 +52,7 @@ func TestProjectorPreparesOnceAndRetriesExactPersistedBuzzBytes(t *testing.T) {
 	// A new projector instance proves no process-local queue or cursor is
 	// needed to resume the exact prepared artifact after removal/restart.
 	projector, err = NewProjector(ProjectorConfig{
-		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: signer, Relay: relay,
+		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: signer, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -66,6 +69,22 @@ func TestProjectorPreparesOnceAndRetriesExactPersistedBuzzBytes(t *testing.T) {
 	}
 }
 
+func TestNewProjectorRejectsInvalidCaseMentionPubkeys(t *testing.T) {
+	validSigner := &configuredFakeSigner{pub: "0000000000000000000000000000000000000000000000000000000000000000"}
+	base := ProjectorConfig{Source: &fakeFactSource{}, Verifier: fakeVerifier{}, Channels: fakeChannels{}, Store: NewMemoryStore(), Signer: validSigner, Relay: &fakeRelay{}}
+	for _, value := range []string{"", "ABCDEF", "zz" + strings.Repeat("0", 62), strings.Repeat("0", 63), strings.Repeat("0", 65), strings.Repeat("f", 64)} {
+		base.CaseMentionPubKey = value
+		if _, err := NewProjector(base); err == nil {
+			t.Fatalf("accepted invalid case mention pubkey %q", value)
+		}
+	}
+	base.CaseMentionPubKey = validCaseMentionPubKey
+	validSigner.pub = validCaseMentionPubKey
+	if _, err := NewProjector(base); err == nil {
+		t.Fatal("accepted case mention pubkey collision with signer")
+	}
+}
+
 func TestProjectorPersistsSupersedingEventOnlyAfterExpiredAbsentProof(t *testing.T) {
 	record := testCaseRecord(1, "case-1", "case-envelope-1", "support/sre")
 	source := &fakeFactSource{records: []CommittedFact{record}}
@@ -77,7 +96,7 @@ func TestProjectorPersistsSupersedingEventOnlyAfterExpiredAbsentProof(t *testing
 	projector, err := NewProjector(ProjectorConfig{
 		Source: source, Verifier: verifier,
 		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"},
-		Store:    store, Signer: signer, Relay: relay, Clock: func() time.Time { return now },
+		Store:    store, Signer: signer, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay, Clock: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +124,13 @@ func TestProjectorPersistsSupersedingEventOnlyAfterExpiredAbsentProof(t *testing
 	}
 	if len(relay.published) != 1 || !bytes.Equal(relay.published[0], replacement.Wire) {
 		t.Fatalf("published replacements = %q", relay.published)
+	}
+	var replacementEvent nostrEvent
+	if err := json.Unmarshal(replacement.Wire, &replacementEvent); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replacementEvent.Tags, [][]string{{"h", "11111111-1111-1111-1111-111111111111"}, {"p", validCaseMentionPubKey}}) {
+		t.Fatalf("replacement tags = %#v", replacementEvent.Tags)
 	}
 }
 
@@ -329,7 +355,7 @@ func TestAdviceUsesPersistedCaseRootAndBuzzFailureDoesNotChangeJournal(t *testin
 	store := NewMemoryStore()
 	relay := &fakeRelay{failures: 1}
 	projector, err := NewProjector(ProjectorConfig{
-		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: &fakeSigner{}, Relay: relay,
+		Source: source, Verifier: verifier, Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: &fakeSigner{}, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -359,6 +385,9 @@ func TestAdviceUsesPersistedCaseRootAndBuzzFailureDoesNotChangeJournal(t *testin
 	if root == "" || !hasReplyRoot(event.Tags, root) {
 		t.Fatalf("advice root mapping = %q event=%#v", root, event)
 	}
+	if !reflect.DeepEqual(event.Tags, [][]string{{"h", "11111111-1111-1111-1111-111111111111"}, {"e", root, "", "reply"}}) {
+		t.Fatalf("advice tags = %#v", event.Tags)
+	}
 }
 
 func TestProjectorPublishesOnlyExplicitPublicSummaries(t *testing.T) {
@@ -372,7 +401,7 @@ func TestProjectorPublishesOnlyExplicitPublicSummaries(t *testing.T) {
 			string(adviceRecord.Raw): testAdviceEnvelope("case-1", "advice-envelope-1"),
 		}},
 		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"},
-		Store:    store, Signer: &fakeSigner{}, Relay: &fakeRelay{}, Clock: func() time.Time { return projectorNow },
+		Store:    store, Signer: &fakeSigner{}, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: &fakeRelay{}, Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +421,16 @@ func TestProjectorPublishesOnlyExplicitPublicSummaries(t *testing.T) {
 		if !strings.Contains(event.Content, want) {
 			t.Fatalf("projection %d omitted explicit public summary: %s", sequence, event.Content)
 		}
+		if sequence == 1 && !reflect.DeepEqual(event.Tags, [][]string{{"h", "11111111-1111-1111-1111-111111111111"}, {"p", validCaseMentionPubKey}}) {
+			t.Fatalf("case tags = %#v", event.Tags)
+		}
+		if sequence == 2 {
+			for _, tag := range event.Tags {
+				if len(tag) > 0 && tag[0] == "p" {
+					t.Fatalf("advice unexpectedly mentions dispatcher: %#v", event.Tags)
+				}
+			}
+		}
 		for _, forbidden := range []string{"CONFIDENTIAL CASE DETAIL", "CONFIDENTIAL ADVICE DETAIL"} {
 			if strings.Contains(event.Content, forbidden) {
 				t.Fatalf("projection %d leaked confidential SSP content: %s", sequence, event.Content)
@@ -405,7 +444,7 @@ func TestProjectorPoisonAndLagRemainInPersistedState(t *testing.T) {
 	store := NewMemoryStore()
 	projector, err := NewProjector(ProjectorConfig{
 		Source: &fakeFactSource{records: []CommittedFact{record}}, Verifier: fakeVerifier{envelopes: map[string]ssp.Envelope{string(record.Raw): testCaseEnvelope("case-1", "case-envelope-1", "support/sre")}},
-		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: &fakeSigner{}, Relay: &fakeRelay{failures: 2}, MaxAttempts: 1,
+		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"}, Store: store, Signer: &fakeSigner{}, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: &fakeRelay{failures: 2}, MaxAttempts: 1,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -435,7 +474,7 @@ func TestProjectorParksPoisonAndContinuesWithIndependentFact(t *testing.T) {
 			string(second.Raw): testCaseEnvelope("case-2", "case-envelope-2", "support/sre"),
 		}},
 		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"},
-		Store:    store, Signer: &fakeSigner{}, Relay: relay, MaxAttempts: 1,
+		Store:    store, Signer: &fakeSigner{}, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay, MaxAttempts: 1,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -472,7 +511,7 @@ func TestProjectorRejectsNonCanonicalChannelBeforeSigningOrPersistence(t *testin
 					string(record.Raw): testCaseEnvelope("case-1", "case-envelope-1", "support/sre"),
 				}},
 				Channels: fakeChannels{"support/sre": channel},
-				Store:    store, Signer: signer, Relay: &fakeRelay{},
+				Store:    store, Signer: signer, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: &fakeRelay{},
 				Clock: func() time.Time { return projectorNow },
 			})
 			if err != nil {
@@ -498,7 +537,7 @@ func TestProjectorCanRebuildAnAuthorityVerifiedFactAfterEnvelopeExpiry(t *testin
 		Source:   &fakeFactSource{records: []CommittedFact{record}},
 		Verifier: fakeVerifier{envelopes: map[string]ssp.Envelope{string(record.Raw): envelope}},
 		Channels: fakeChannels{"support/sre": "11111111-1111-1111-1111-111111111111"},
-		Store:    NewMemoryStore(), Signer: &fakeSigner{}, Relay: relay,
+		Store:    NewMemoryStore(), Signer: &fakeSigner{}, CaseMentionPubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", Relay: relay,
 		Clock: func() time.Time { return projectorNow },
 	})
 	if err != nil {
@@ -557,6 +596,13 @@ func (c fakeChannels) ChannelForDomain(_ context.Context, domain string) (string
 }
 
 type fakeSigner struct{ calls int }
+
+type configuredFakeSigner struct {
+	fakeSigner
+	pub string
+}
+
+func (s *configuredFakeSigner) PublicKey() string { return s.pub }
 
 func (s *fakeSigner) PublicKey() string {
 	return "0000000000000000000000000000000000000000000000000000000000000000"

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/avivsinai/snagline/internal/ssp"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/google/uuid"
 )
 
@@ -62,31 +63,43 @@ type RelayClient interface {
 }
 
 type ProjectorConfig struct {
-	Source      FactSource
-	Verifier    CommittedVerifier
-	Channels    DomainChannels
-	Store       Store
-	Signer      DigestSigner
-	Relay       RelayClient
-	Clock       func() time.Time
-	MaxAttempts int
+	Source            FactSource
+	Verifier          CommittedVerifier
+	Channels          DomainChannels
+	Store             Store
+	Signer            DigestSigner
+	CaseMentionPubKey string
+	Relay             RelayClient
+	Clock             func() time.Time
+	MaxAttempts       int
 }
 
 type Projector struct {
-	source      FactSource
-	verifier    CommittedVerifier
-	channels    DomainChannels
-	store       Store
-	signer      DigestSigner
-	relay       RelayClient
-	clock       func() time.Time
-	maxAttempts int
-	mu          sync.Mutex
+	source            FactSource
+	verifier          CommittedVerifier
+	channels          DomainChannels
+	store             Store
+	signer            DigestSigner
+	caseMentionPubKey string
+	relay             RelayClient
+	clock             func() time.Time
+	maxAttempts       int
+	mu                sync.Mutex
 }
 
 func NewProjector(config ProjectorConfig) (*Projector, error) {
 	if config.Source == nil || config.Verifier == nil || config.Channels == nil || config.Store == nil || config.Signer == nil || config.Relay == nil {
 		return nil, errors.New("collab buzz: source, verifier, channels, store, signer, and relay are required")
+	}
+	if len(config.CaseMentionPubKey) != 64 || strings.ToLower(config.CaseMentionPubKey) != config.CaseMentionPubKey || config.CaseMentionPubKey == config.Signer.PublicKey() {
+		return nil, errors.New("collab buzz: case mention pubkey is invalid")
+	}
+	pubkey, err := hex.DecodeString(config.CaseMentionPubKey)
+	if err != nil || len(pubkey) != schnorr.PubKeyBytesLen {
+		return nil, errors.New("collab buzz: case mention pubkey is invalid")
+	}
+	if _, err := schnorr.ParsePubKey(pubkey); err != nil {
+		return nil, errors.New("collab buzz: case mention pubkey is invalid")
 	}
 	clock := config.Clock
 	if clock == nil {
@@ -98,7 +111,7 @@ func NewProjector(config ProjectorConfig) (*Projector, error) {
 	}
 	return &Projector{
 		source: config.Source, verifier: config.Verifier, channels: config.Channels,
-		store: config.Store, signer: config.Signer, relay: config.Relay,
+		store: config.Store, signer: config.Signer, caseMentionPubKey: config.CaseMentionPubKey, relay: config.Relay,
 		clock: clock, maxAttempts: maxAttempts,
 	}, nil
 }
@@ -418,6 +431,9 @@ func (p *Projector) prepare(ctx context.Context, channel, root, content string) 
 		return preparedEvent{}, errors.New("collab buzz: operator channel mapping must be a canonical UUID")
 	}
 	tags := [][]string{{"h", channel}}
+	if root == "" {
+		tags = append(tags, []string{"p", p.caseMentionPubKey})
+	}
 	if root != "" {
 		tags = append(tags, []string{"e", root, "", "reply"})
 	}
