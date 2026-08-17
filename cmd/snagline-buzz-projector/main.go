@@ -66,6 +66,7 @@ type projectorConfig struct {
 
 func main() {
 	configPath := flag.String("config", "", "absolute projector configuration path")
+	caseMentionPubKey := flag.String("case-mention-pubkey", "", "required dispatcher Nostr x-only pubkey for case mentions")
 	flag.Parse()
 	if flag.NArg() != 0 || !filepath.IsAbs(*configPath) {
 		log.Print("snagline-buzz-projector: invalid arguments")
@@ -73,7 +74,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *configPath); err != nil {
+	if err := run(ctx, *configPath, *caseMentionPubKey); err != nil {
 		// Errors can originate from a credentialed DSN or signer. Keep output
 		// deliberately non-diagnostic so secrets never cross the log boundary.
 		log.Print("snagline-buzz-projector: runtime stopped")
@@ -81,15 +82,15 @@ func main() {
 	}
 }
 
-func run(parent context.Context, configPath string) error {
+func run(parent context.Context, configPath, caseMentionPubKey string) error {
 	settings, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
-	return runConfigured(parent, settings)
+	return runConfigured(parent, settings, caseMentionPubKey)
 }
 
-func runConfigured(parent context.Context, settings projectorConfig) error {
+func runConfigured(parent context.Context, settings projectorConfig, caseMentionPubKey string) error {
 	privateKey, err := securefile.ReadPrivateExact(settings.PrivateKeyFile, 32)
 	if err != nil {
 		return errors.New("buzz projector signer is unavailable")
@@ -151,7 +152,7 @@ func runConfigured(parent context.Context, settings projectorConfig) error {
 	projector, err := projectorbuzz.NewProjector(projectorbuzz.ProjectorConfig{
 		Source:   projectorbuzz.AuthoritySource{Store: authorityStore, TenantID: settings.Tenant},
 		Verifier: verifier, Channels: channels, Store: store,
-		Signer: signer, Relay: relay,
+		Signer: signer, CaseMentionPubKey: caseMentionPubKey, Relay: relay,
 	})
 	if err != nil {
 		return errors.New("buzz projector is unavailable")
