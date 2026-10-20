@@ -1,8 +1,8 @@
-# Snagline with stock Buzz: pristine design and implementation plan
+# Snagline with stock Buzz: pristine design
 
 ## Status
 
-This is the target architecture for Snagline's first deployment.
+This is the architecture of Snagline's deployment.
 
 There is no installed Snagline topology to preserve. The first release ships
 only the target contracts and state described here; it has no dual-write
@@ -614,107 +614,15 @@ Logs, metrics, audit reasons, and Buzz cards are allowlisted and redacted. Exact
 signed bytes remain in encrypted or access-controlled stores and are never
 logged.
 
-## Repository target
+## Repository layout
 
-The final product tree converges on:
-
-```text
-internal/ssp/
-internal/registry/
-internal/authority/
-internal/delivery/
-internal/deliverystream/
-internal/sspedge/
-internal/edge/
-internal/front/cli/
-internal/front/amq/
-internal/collab/buzz/
-
-cmd/snagline-control/
-cmd/snagline-delivery/
-cmd/snagline-edge/
-cmd/snagline-dispatcher/
-cmd/snagline-buzz-projector/
-cmd/snagline-ssp-verify/
-```
+Each deployable role is one command under `cmd/`. Shared contracts, authority,
+delivery, edge, front-end, and Buzz-adapter code live under `internal/`, one
+package per boundary described above. No package exists for a prototype,
+transition phase, or compatibility path.
 
 The stock Buzz repository remains a separate upstream dependency with zero
 Snagline-owned changes.
-
-Before the first installation, remove every exploratory control-plane,
-sidecar, concierge, provider-effect, inbound/cursor, store, and command
-prototype that is not part of this design. Test-only scaffolding stays only
-where it verifies a shipped boundary; no transition phase or compatibility
-package is created.
-
-## Implementation plan
-
-### Slice 1 — signed contract
-
-- keep only registry, case, and advice families;
-- require positive edge generation in registry and case;
-- maintain strict schemas, hostile-input tests, signed vectors, JCS fixtures,
-  commitments, and independent verification.
-
-Exit: contract tests and regenerated-vector verification pass.
-
-### Slice 2 — transactional authority
-
-- add migrations and least-privilege roles;
-- implement registry, case, final-advice, delivery-sequence, audit, and outbox
-  transactions;
-- prove exact idempotency and conflict behavior under concurrent gateways;
-- expose typed authority interfaces and commit receipts.
-
-Exit: real-PostgreSQL integration tests prove uniqueness, rollback/equivocation
-handling, one final advice, contiguous per-generation delivery, and atomic
-outbox/audit behavior.
-
-### Slice 3 — control API and workers
-
-- implement mTLS identity mapping and strict raw-body bounds;
-- wire authority transactions to stable HTTP outcomes;
-- implement leased outbox publication and PostgreSQL-backed reconciliation;
-- add readiness for database, migrations, registry head, and worker lag.
-
-Exit: multi-replica admission and crash-after-commit tests pass.
-
-### Slice 4 — edge
-
-- implement encrypted pending submission and advice spools;
-- consume authoritative delivery metadata through JetStream;
-- implement gap detection and PostgreSQL reconciliation;
-- expose the advice-only Unix-socket API and shared CLI/AMQ front outbox.
-
-Exit: offline-beyond-retention and lost-local-consumer tests rebuild the exact
-global delivery state without using Buzz.
-
-### Slice 5 — Buzz projection
-
-- wire the outbound projector source to PostgreSQL facts;
-- preserve exact prepared-event retry and deterministic root/reply mapping;
-- add stock-Buzz client integration behind the outbound-only interface;
-- prove Buzz absence, delay, duplicate ACK, and database rebuild cannot affect
-  Snagline acceptance or edge delivery.
-
-Exit: the pinned stock Buzz build receives explicit public case/advice cards; a
-separate NIP-OA-managed ACP agent wakes from an allowlisted human or agent,
-replies, and can invoke only the narrow dispatcher tool; no inbound authority
-path or upstream change exists.
-
-### Slice 6 — packaging and pre-launch cleanup
-
-- package `snagline-control`, edge, dispatcher, and projector roles;
-- add scoped configuration, migrations, health, metrics, backups, restore, and
-  key-rotation runbooks;
-- remove pre-launch prototypes, abandoned plans, and tests that exercise
-  behavior outside the architecture being packaged;
-- run full unit, race, vet, schema/vector, real PostgreSQL, real NATS, and
-  stock-Buzz end-to-end gates;
-- obtain exact-tree peer review before commit/push.
-
-Exit: only the pristine architecture builds, tests, packages, and appears in
-documentation.
 
 ## Non-goals
 
