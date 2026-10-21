@@ -35,7 +35,7 @@ require (
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.4.0
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
