@@ -1,6 +1,6 @@
 module github.com/avivsinai/snagline
 
-go 1.26.5
+go 1.26.10
 
 require (
 	github.com/gowebpki/jcs v1.0.1
