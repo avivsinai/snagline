@@ -15,7 +15,7 @@ MARKER_ATOM = r"[A-Za-z_][A-Za-z0-9_]*\s*(?:==|!=|<=|>=|<|>)\s*'[^']+'"
 MARKER = rf"(?:\s*;\s*{MARKER_ATOM}(?:\s+(?:and|or)\s+{MARKER_ATOM})*)?"
 LOCK_REQUIREMENT = re.compile(rf"^({NAME})==({VERSION})(?P<marker>{MARKER})\s+\\$")
 HASH = re.compile(r"^--hash=sha256:[0-9a-f]{64}(?P<continued>\s+\\)?$")
-UV_VERSION = "0.11.10"
+UV_VERSION = "0.13.4"
 UV_VERSION_OUTPUT = re.compile(rf"^uv {re.escape(UV_VERSION)}(?: \([^)]+\))?$")
 
 
