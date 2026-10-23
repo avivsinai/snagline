@@ -2,6 +2,8 @@ module github.com/avivsinai/snagline
 
 go 1.26.5
 
+toolchain go1.26.10
+
 require (
 	github.com/gowebpki/jcs v1.0.1
 	github.com/jackc/pgx/v5 v5.9.2
