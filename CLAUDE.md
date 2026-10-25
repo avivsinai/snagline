@@ -81,3 +81,6 @@ gate needs a separately deployed stock instance and immutable image digest.
   a transport-to-effect bridge.
 - Open a pull request against `main` for review.  CI must pass `make verify`,
   and a maintainer must approve the change before it merges.
+- Coordinate with peers over AMQ; messages should name paths, not paste file
+  contents.  Do not commit, push, deploy, or merge without the required
+  authority.
