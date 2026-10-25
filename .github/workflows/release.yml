@@ -2,16 +2,59 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
   id-token: write
   attestations: write
 
+concurrency:
+  group: release-${{ needs.prepare.outputs.release_sha }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      release_sha: ${{ steps.prepare.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+      - name: Resolve release metadata
+        id: prepare
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+          tag="${commit_subject#chore(release): }"
+          tag="${tag%% \(#*}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]] || {
+            echo "::error::Release identifiers must use vX.Y.Z style tags. Got: ${tag}"
+            exit 1
+          }
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::Tag ${tag} already exists."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
   validate-and-release:
+    needs: prepare
+    if: needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     services:
@@ -30,6 +73,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_sha }}
+      # The v* tag ruleset lets only the release App create tags. Until the
+      # App is configured (vars.RELEASE_APP_CLIENT_ID), the job token is used.
+      - name: Mint release App token
+        id: release-app
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Create release tag after validation
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          GH_TOKEN: ${{ steps.release-app.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$RELEASE_SHA" >/dev/null
+          # Later tag-validating steps (gh release create --verify-tag) need
+          # the local tag present.
+          git fetch --force --tags origin
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.10"
@@ -122,12 +187,12 @@ jobs:
           created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           mkdir release-images
           for target in control delivery edge case dispatcher dispatcher-runtime buzz-projector ssp-verify; do
-            image="snagline-${target}:${{ github.ref_name }}"
+            image="snagline-${target}:${{ needs.prepare.outputs.tag }}"
             docker build \
               --target "$target" \
               --platform linux/amd64 \
-              --build-arg VERSION="${{ github.ref_name }}" \
-              --build-arg COMMIT="${{ github.sha }}" \
+              --build-arg VERSION="${{ needs.prepare.outputs.tag }}" \
+              --build-arg COMMIT="${{ needs.prepare.outputs.release_sha }}" \
               --build-arg DATE="$created" \
               --tag "$image" .
             set +e
@@ -140,7 +205,7 @@ jobs:
               exit 1
             fi
             docker save \
-              --output "release-images/snagline-${target}_${{ github.ref_name }}_linux_amd64.docker.tar" \
+              --output "release-images/snagline-${target}_${{ needs.prepare.outputs.tag }}_linux_amd64.docker.tar" \
               "$image"
           done
       - name: Create hidden release candidate with exact assets
@@ -148,7 +213,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+          if gh release view "${{ needs.prepare.outputs.tag }}" >/dev/null 2>&1; then
             echo "release already exists; refusing to overwrite it" >&2
             exit 1
           fi
@@ -159,11 +224,11 @@ jobs:
             digest="$(sha256sum "$asset" | cut -d' ' -f1)"
             printf '%s  %s\n' "$digest" "$(basename "$asset")"
           done > release-assets.sha256
-          gh release create "${{ github.ref_name }}" \
+          gh release create "${{ needs.prepare.outputs.tag }}" \
             --verify-tag \
             --draft \
             --generate-notes \
-            --title "${{ github.ref_name }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
             dist/*.tar.gz \
             dist/checksums.txt \
             release-images/*.docker.tar \
@@ -173,7 +238,7 @@ jobs:
             find release-images -maxdepth 1 -type f -name '*.docker.tar' -exec basename {} \;
             printf '%s\n' checksums.txt release-assets.sha256
           } | sort > expected-assets.txt
-          gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name' |
+          gh release view "${{ needs.prepare.outputs.tag }}" --json assets --jq '.assets[].name' |
             sort > actual-assets.txt
           diff -u expected-assets.txt actual-assets.txt
       - name: Attest release checksums
@@ -183,4 +248,4 @@ jobs:
       - name: Publish complete release atomically
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
