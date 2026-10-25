@@ -75,13 +75,13 @@ jobs:
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           make secrets-scan
       - name: Check release configuration
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
           version: "v2.17.1"
           args: check
       - name: Build release snapshot
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
           version: "v2.17.1"
