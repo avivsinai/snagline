@@ -11,7 +11,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: release-${{ needs.prepare.outputs.release_sha }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -48,9 +48,11 @@ jobs:
             echo "::error::Tag ${tag} already exists."
             exit 1
           fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-          echo "release_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "release_sha=${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
 
   validate-and-release:
     needs: prepare
