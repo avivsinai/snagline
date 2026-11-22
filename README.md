@@ -16,10 +16,35 @@ Agent collaboration happens over an unmodified, outbound-only stock Buzz
 projection that can inform a dispatcher but can never create or change
 Snagline state.
 
-## Status
+## Installation
 
-Snagline is pre-release: there are no tagged binary releases yet. Build from
-source with the instructions below.
+### Release binaries
+
+[Snagline v0.1.5](https://github.com/avivsinai/snagline/releases/tag/v0.1.5)
+provides two Linux x86-64 (`amd64`) archives.
+
+| Archive | Bundle |
+| --- | --- |
+| `snagline_0.1.5_linux_amd64.tar.gz` | Base commands |
+| `snagline_edge_0.1.5_linux_amd64.tar.gz` | Edge and dispatcher commands |
+
+Download the archive you need and `checksums.txt` from the release page. Run
+this from the download directory.
+
+```sh
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Confirm that your archive is reported as `OK`, then extract it with `tar -xzf`.
+
+### Build from source
+
+Follow the [build prerequisites](CONTRIBUTING.md#toolchain), then build every
+command from a source checkout.
+
+```sh
+make build
+```
 
 ## Architecture
 
@@ -67,12 +92,6 @@ None of the eight is a
 There is no compatibility layer for the removed concierge, control-plane, or
 sidecar products. Nothing in this repository installs, publishes, deploys, or
 starts a pilot.
-
-Build every command locally:
-
-```sh
-make build
-```
 
 Run the complete local verification gate:
 
